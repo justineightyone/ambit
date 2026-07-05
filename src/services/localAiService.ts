@@ -106,11 +106,26 @@ export const extractJsonText = (raw: string): string => {
 const stripReasoning = (raw: string): string =>
     raw.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
 
+/**
+ * Inside Tauri, use the native HTTP plugin: requests go through Rust, so the
+ * local server needs no CORS headers (LM Studio ships with CORS off; Ollama
+ * doesn't allow the tauri.localhost origin). In the browser (dev/mock mode),
+ * fall back to window.fetch.
+ */
+const getFetch = async (): Promise<typeof globalThis.fetch> => {
+    if (typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window) {
+        const { fetch: tauriFetch } = await import('@tauri-apps/plugin-http');
+        return tauriFetch as typeof globalThis.fetch;
+    }
+    return globalThis.fetch.bind(globalThis);
+};
+
 const postChat = async (
     baseUrl: string,
     body: Record<string, unknown>
 ): Promise<Response> => {
-    return fetch(`${baseUrl}/chat/completions`, {
+    const doFetch = await getFetch();
+    return doFetch(`${baseUrl}/chat/completions`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
@@ -184,7 +199,8 @@ export const verifyLocalEndpoint = async (
 ): Promise<{ valid: boolean; error?: string; models: string[] }> => {
     const normalized = normalizeBaseUrl(baseUrl);
     try {
-        const response = await fetch(`${normalized}/models`, {
+        const doFetch = await getFetch();
+        const response = await doFetch(`${normalized}/models`, {
             signal: AbortSignal.timeout(10_000)
         });
         if (!response.ok) {

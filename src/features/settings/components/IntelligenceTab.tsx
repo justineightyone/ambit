@@ -51,7 +51,16 @@ export const IntelligenceTab: React.FC<TabProps> = React.memo(({ settings, setSe
     const [isConnecting, setIsConnecting] = React.useState(false);
     const [localStatus, setLocalStatus] = React.useState<'idle' | 'success' | 'error'>('idle');
     const [localError, setLocalError] = React.useState<string | null>(null);
-    const localBaseUrl = settings.localAiBaseUrl || DEFAULT_LOCAL_AI_BASE_URL;
+    // Dedicated input state: deriving the field from settings with a || fallback
+    // made it impossible to clear (every deletion snapped back to the default).
+    const [baseUrlInput, setBaseUrlInput] = React.useState(
+        settings.localAiBaseUrl ?? DEFAULT_LOCAL_AI_BASE_URL
+    );
+
+    const handleBaseUrlChange = (value: string) => {
+        setBaseUrlInput(value);
+        setSettings(prev => ({ ...prev, localAiBaseUrl: value }));
+    };
 
     // Update local state if global key changes (e.g. from init)
     React.useEffect(() => {
@@ -81,12 +90,14 @@ export const IntelligenceTab: React.FC<TabProps> = React.memo(({ settings, setSe
         }
     }, [addToast]);
 
-    // Auto-connect when the tab opens with local provider active
+    // Auto-connect once when the tab opens with local provider active
+    const hasAutoConnected = React.useRef(false);
     React.useEffect(() => {
-        if (settings.enableAI && provider === 'local' && localStatus === 'idle') {
-            void connectLocalServer(localBaseUrl, true);
+        if (settings.enableAI && provider === 'local' && !hasAutoConnected.current) {
+            hasAutoConnected.current = true;
+            void connectLocalServer(baseUrlInput, true);
         }
-    }, [settings.enableAI, provider, localStatus, localBaseUrl, connectLocalServer]);
+    }, [settings.enableAI, provider, baseUrlInput, connectLocalServer]);
 
     const handleAIToggle = () => {
         const newValue = !settings.enableAI;
@@ -233,15 +244,15 @@ export const IntelligenceTab: React.FC<TabProps> = React.memo(({ settings, setSe
                                         <div className="flex gap-2">
                                             <input
                                                 type="text"
-                                                value={localBaseUrl}
-                                                onChange={e => setSettings(prev => ({ ...prev, localAiBaseUrl: e.target.value }))}
+                                                value={baseUrlInput}
+                                                onChange={e => handleBaseUrlChange(e.target.value)}
                                                 placeholder={DEFAULT_LOCAL_AI_BASE_URL}
                                                 spellCheck={false}
                                                 className="flex-1 bg-gray-50 dark:bg-black/20 border border-gray-200 dark:border-white/10 rounded-xl p-3 text-sm focus:border-sage-500 outline-none text-gray-700 dark:text-gray-300 transition-colors font-mono"
                                             />
                                             <button
                                                 type="button"
-                                                onClick={() => connectLocalServer(localBaseUrl)}
+                                                onClick={() => connectLocalServer(baseUrlInput)}
                                                 disabled={isConnecting}
                                                 className="px-4 rounded-xl bg-sage-600 hover:bg-sage-500 text-white text-sm font-medium transition-colors disabled:opacity-50 flex items-center gap-2"
                                             >

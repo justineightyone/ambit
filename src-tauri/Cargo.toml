@@ -25,6 +25,7 @@ log = "0.4"
 tauri = { version = "2.11.2", features = ["protocol-asset", "image-png"] }
 tauri-plugin-log = "2"
 tauri-plugin-fs = { version = "2.5.1", features = ["watch"] }
+tauri-plugin-http = "2"
 tauri-plugin-dialog = "2.7.1"
 image = "0.25"
 webp = "0.3"
