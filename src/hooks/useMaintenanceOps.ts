@@ -102,13 +102,13 @@ export const useMaintenanceOps = ({
         try {
             const base64 = await imageToBase64(img.id);
             const apiKey = useSettingsStore.getState().geminiApiKey;
-            if (!apiKey) throw new Error("No API Key");
+            const { recoverImageMetadata, isLocalProvider } = await import('../services/aiService');
+            if (!apiKey && !isLocalProvider()) throw new Error("No API Key");
 
-            const { recoverImageMetadata } = await import('../services/geminiService');
             const recoveredMeta = await recoverImageMetadata(
                 base64,
                 style,
-                apiKey,
+                apiKey ?? '',
                 effectiveAiModel,
                 effectiveSystemPrompts,
                 effectiveAiThinkingMode

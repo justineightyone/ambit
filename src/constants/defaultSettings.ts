@@ -11,6 +11,8 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   maskedKeywords: ['nsfw', 'blood', 'gore'],
   maskingMode: 'blur',
   enableAI: false,
+  aiProvider: 'local',
+  localAiBaseUrl: 'http://localhost:11434/v1',
   aiThinkingMode: 'default',
   syncBoardsToCollections: false,
   invokeSyncFavorites: true,

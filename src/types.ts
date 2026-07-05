@@ -266,6 +266,14 @@ export interface AppSettings {
   maskedKeywords: string[];
   maskingMode: 'blur' | 'hide';
   enableAI: boolean;
+  /** AI backend: local OpenAI-compatible server (Ollama/LM Studio) or Gemini API. Undefined = gemini (upstream behavior). */
+  aiProvider?: 'local' | 'gemini';
+  /** Base URL of the local OpenAI-compatible server, e.g. http://localhost:11434/v1 */
+  localAiBaseUrl?: string;
+  /** Local model used for text tasks (analysis, variations, titles, NL search) */
+  localAiModel?: string;
+  /** Local model used for image-based metadata recovery; falls back to localAiModel */
+  localAiVisionModel?: string;
   /** @deprecated Moved to OS Secure Keyring. See geminiApiKey in SettingsState. */
   googleGeminiApiKey?: string;
   aiModel?: string;

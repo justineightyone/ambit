@@ -79,12 +79,12 @@ export const useAiSearchLogic = ({
     if (isAiSearchEnabled && settings.enableAI) {
       const apiKey = useSettingsStore.getState().geminiApiKey;
       setIsSearchingAi(true);
-      addToast("Gemini is analyzing your request...", "info");
+      const { generateFiltersFromQuery, isLocalProvider } = await import('../services/aiService');
+      addToast(isLocalProvider() ? "Local AI is analyzing your request..." : "Gemini is analyzing your request...", "info");
       try {
-        const { generateFiltersFromQuery } = await import('../services/geminiService');
         const aiFilters = await generateFiltersFromQuery(
           trimmed,
-          apiKey!,
+          apiKey ?? '',
           getEffectiveAiModel(settings),
           getEffectiveSystemPrompts(settings),
           getEffectiveAiThinkingMode(settings)

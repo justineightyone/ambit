@@ -1,15 +1,19 @@
 
 import { useState } from 'react';
 import { useSettingsStore } from '../stores/settingsStore';
+import { isLocalProvider } from '../services/aiService';
 import type { AiThinkingMode } from '../types';
 
 /**
- * Parses a Gemini API error into a user-friendly message.
+ * Parses an AI provider error into a user-friendly message.
  */
 function parseGeminiError(error: unknown): string {
   const msg = error instanceof Error ? error.message : String(error);
   const lowerMsg = msg.toLowerCase();
 
+  if (lowerMsg.includes('local ai') || lowerMsg.includes('no local model')) {
+    return msg;
+  }
   if (lowerMsg.includes('quota') || lowerMsg.includes('resource exhausted') || lowerMsg.includes('429')) {
     return 'AI quota exceeded. Please try again later.';
   }
@@ -45,15 +49,15 @@ export const useImageAI = ({ aiModel, aiThinkingMode, enableAI, prompts, onError
 
   const analyzePrompt = async (prompt: string, onOpenSettings: () => void) => {
     const apiKey = useSettingsStore.getState().geminiApiKey;
-    if (!enableAI || !apiKey) {
+    if (!enableAI || (!apiKey && !isLocalProvider())) {
       onOpenSettings();
       return;
     }
 
     setIsAnalyzing(true);
     try {
-      const { analyzePromptAndSuggest } = await import('../services/geminiService');
-      const insight = await analyzePromptAndSuggest(prompt, apiKey, aiModel, prompts, aiThinkingMode);
+      const { analyzePromptAndSuggest } = await import('../services/aiService');
+      const insight = await analyzePromptAndSuggest(prompt, apiKey ?? '', aiModel, prompts, aiThinkingMode);
       setResult(insight);
       setModalType('analysis');
       setModalOpen(true);
@@ -67,15 +71,15 @@ export const useImageAI = ({ aiModel, aiThinkingMode, enableAI, prompts, onError
 
   const generateVariations = async (prompt: string, onOpenSettings: () => void) => {
     const apiKey = useSettingsStore.getState().geminiApiKey;
-    if (!enableAI || !apiKey) {
+    if (!enableAI || (!apiKey && !isLocalProvider())) {
       onOpenSettings();
       return;
     }
 
     setIsAnalyzing(true);
     try {
-      const { generatePromptVariations } = await import('../services/geminiService');
-      const vars = await generatePromptVariations(prompt, apiKey, aiModel, prompts, aiThinkingMode);
+      const { generatePromptVariations } = await import('../services/aiService');
+      const vars = await generatePromptVariations(prompt, apiKey ?? '', aiModel, prompts, aiThinkingMode);
       setResult(vars);
       setModalType('variations');
       setModalOpen(true);
