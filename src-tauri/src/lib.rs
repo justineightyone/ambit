@@ -154,8 +154,7 @@ pub fn run() {
         .manage(thumb::optimizer::ThumbnailOptimizationState::default())
         .invoke_handler(builder.invoke_handler())
         .setup(|app| {
-            app.handle()
-                .plugin(tauri_plugin_updater::Builder::new().build())?;
+            // Fork: updater plugin removed; upstream releases would replace the local-AI build.
 
             // 1. Initialize DB settings (WAL mode, etc.)
             let handle_for_db = app.handle().clone();
