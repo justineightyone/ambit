@@ -10,6 +10,8 @@ interface UseAppUpdaterOptions {
   autoCheckEnabled: boolean;
   isSettingsLoaded: boolean;
   isDevBuild?: boolean;
+  /** Blocks all update checks. Set in this fork: upstream releases would replace the local-AI build. */
+  disabled?: boolean;
 }
 
 interface CheckForUpdatesOptions {
@@ -49,6 +51,7 @@ export const useAppUpdater = ({
   autoCheckEnabled,
   isSettingsLoaded,
   isDevBuild = import.meta.env.DEV,
+  disabled = false,
 }: UseAppUpdaterOptions) => {
   const [status, setStatus] = useState<AppUpdaterStatus>('idle');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -56,13 +59,18 @@ export const useAppUpdater = ({
   const [isDialogOpen, setIsDialogOpen] = useState(false);
 
   const hasAttemptedStartupCheck = useRef(false);
-  const canCheckForUpdates = !isDevBuild;
+  const canCheckForUpdates = !disabled && !isDevBuild;
 
   const checkForUpdates = useCallback(
     async ({ manual = false }: CheckForUpdatesOptions = {}) => {
       if (!canCheckForUpdates) {
         if (manual) {
-          addToast('Auto-update checks are disabled in development builds.', 'info');
+          addToast(
+            disabled
+              ? 'Update checks are disabled in this build to protect the local-AI changes.'
+              : 'Auto-update checks are disabled in development builds.',
+            'info'
+          );
         }
 
         return null;
@@ -105,7 +113,7 @@ export const useAppUpdater = ({
         return null;
       }
     },
-    [addToast, canCheckForUpdates]
+    [addToast, canCheckForUpdates, disabled]
   );
 
   const installUpdate = useCallback(async () => {

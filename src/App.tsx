@@ -102,6 +102,8 @@ export default function App() {
         addToast,
         autoCheckEnabled: settings.autoCheckForUpdates !== false,
         isSettingsLoaded,
+        // Fork: upstream releases lack the local AI provider and would replace this build.
+        disabled: true,
     });
 
     // --- Background Processes ---
