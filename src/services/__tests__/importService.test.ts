@@ -109,6 +109,9 @@ describe('processTargetedFiles', () => {
     });
 
     it('returns touched facet types for new and updated live imports', async () => {
+        const nowSpy = vi.spyOn(Date, 'now')
+            .mockReturnValueOnce(1000)
+            .mockReturnValueOnce(2000);
         const result = await processTargetedFiles(
             [
                 'C:/library/updated-image.png',
@@ -116,6 +119,7 @@ describe('processTargetedFiles', () => {
             ],
             { forceRescan: true }
         );
+        nowSpy.mockRestore();
 
         expect(result.stats.imported).toBe(2);
         expect(result.wasCancelled).toBe(false);
@@ -152,6 +156,7 @@ describe('processTargetedFiles', () => {
     });
 
     it('can defer folder-import facet cleanup for startup coordination', async () => {
+        const infoSpy = vi.spyOn(console, 'info').mockImplementation(() => undefined);
         mocks.getExistingMetadata.mockResolvedValue(new Map());
         mocks.scanImagesBulk.mockResolvedValueOnce([
             {
@@ -198,9 +203,19 @@ describe('processTargetedFiles', () => {
             tools: ['ComfyUI']
         });
         expect(mocks.rebuildFacetCache).not.toHaveBeenCalled();
+        expect(infoSpy).toHaveBeenCalledWith(
+            '[ImportUnified] Deferred facet cache refresh to startup catch-up coordinator.',
+            {
+                processed: 1,
+                imported: 1,
+                touchedFacetTypes: ['checkpoints', 'loras', 'tools']
+            }
+        );
+        infoSpy.mockRestore();
     });
 
     it('returns a cancelled result and skips work when aborted before discovery', async () => {
+        const infoSpy = vi.spyOn(console, 'info').mockImplementation(() => undefined);
         const abortCtrl = new AbortController();
         abortCtrl.abort();
 
@@ -219,6 +234,15 @@ describe('processTargetedFiles', () => {
         expect(mocks.scanImagesBulk).not.toHaveBeenCalled();
         expect(mocks.insertImagesBatch).not.toHaveBeenCalled();
         expect(mocks.rebuildFacetCache).not.toHaveBeenCalled();
+        expect(infoSpy).toHaveBeenCalledWith(
+            '[ImportUnified] Import cancelled before processing.',
+            {
+                sourceCount: 1,
+                completedSourceCount: 0,
+                cancelledSourceCount: 1
+            }
+        );
+        infoSpy.mockRestore();
     });
 
     it('returns a cancelled result and skips facet cleanup when aborted after metadata scan', async () => {
@@ -311,6 +335,7 @@ describe('processTargetedFiles', () => {
     });
 
     it('marks completed and unfinished source folders when cancellation happens mid-import', async () => {
+        const infoSpy = vi.spyOn(console, 'info').mockImplementation(() => undefined);
         const abortCtrl = new AbortController();
         mocks.getExistingMetadata.mockResolvedValue(new Map());
         mocks.scanDirectoryWithStats
@@ -369,6 +394,18 @@ describe('processTargetedFiles', () => {
         expect(result.completedSourcePaths).toEqual(['C:/library-a']);
         expect(result.cancelledSourcePaths).toEqual(['C:/library-b', 'C:/library-c']);
         expect(mocks.insertImagesBatch).toHaveBeenCalledTimes(1);
+        expect(infoSpy).toHaveBeenCalledWith(
+            '[ImportUnified] Import cancelled during processing.',
+            {
+                sourceCount: 3,
+                completedSourceCount: 1,
+                cancelledSourceCount: 2,
+                processed: 1,
+                imported: 1,
+                failed: 0
+            }
+        );
+        infoSpy.mockRestore();
     });
 
     it('keeps partial-failure sources retryable without marking them cancelled', async () => {
