@@ -57,11 +57,11 @@ const getDiagnosticLayerTitle = (layer: string | null | undefined) => {
 
 const buildDiagnosticsClipboardPayload = (
     imageId: string,
-    chunks: Record<string, string> | undefined,
+    chunks: Record<string, string>,
     diagnostics: ComfyParserDiagnosticsReport
 ) => {
     const chunkLengths = Object.fromEntries(
-        Object.entries(chunks ?? {}).map(([key, value]) => [key, value.length])
+        Object.entries(chunks).map(([key, value]) => [key, value.length])
     ) as Record<string, number>;
 
     return {
@@ -126,9 +126,7 @@ const ComfyDiagnosticsPanel: React.FC<{
         : [];
 
     const handleCopyDiagnostics = async () => {
-        if (!diagnostics) return;
-
-        const payload = buildDiagnosticsClipboardPayload(imageId, chunks, diagnostics);
+        const payload = buildDiagnosticsClipboardPayload(imageId, chunks!, diagnostics!);
         await navigator.clipboard.writeText(JSON.stringify(payload, null, 2));
         setCopiedDiagnostics(true);
         setTimeout(() => setCopiedDiagnostics(false), 2000);
@@ -232,6 +230,8 @@ const WorkflowNode: React.FC<{ title: string; type: string; inputs: WorkflowInpu
     return (
         <div className="bg-white dark:bg-slate-800/40 border border-gray-200 dark:border-white/5 rounded-xl text-sm overflow-hidden transition-all">
             <button
+                type="button"
+                aria-expanded={hasContent ? isExpanded : undefined}
                 onClick={() => setIsExpanded(!isExpanded)}
                 disabled={!hasContent}
                 className={`w-full flex items-center gap-3 p-3 text-left transition-colors ${isExpanded ? 'bg-gray-50 dark:bg-white/5' : 'hover:bg-gray-50 dark:hover:bg-white/5'} ${!hasContent ? 'cursor-default opacity-80' : ''}`}
@@ -347,17 +347,13 @@ export const WorkflowInspector: React.FC<WorkflowInspectorProps> = ({ image, onW
     }, [image.id, image.metadata.workflowJson]);
 
     const handleCopy = () => {
-        const wf = workflowJsonForActions;
-        if (wf) {
-            navigator.clipboard.writeText(wf);
-            setCopied(true);
-            setTimeout(() => setCopied(false), 2000);
-        }
+        navigator.clipboard.writeText(workflowJsonForActions!);
+        setCopied(true);
+        setTimeout(() => setCopied(false), 2000);
     };
 
     const handleDownload = async () => {
-        const wf = workflowJsonForActions;
-        if (!wf) return;
+        const wf = workflowJsonForActions!;
 
         try {
             // Generate a sensible filename: name_workflow.json
@@ -448,8 +444,8 @@ export const WorkflowInspector: React.FC<WorkflowInspectorProps> = ({ image, onW
             <div className="flex-1 overflow-y-auto custom-scrollbar px-6 pb-6">
                 {filteredNodes.length > 0 ? (
                     <div className="space-y-2">
-                        {filteredNodes.map((node, i) => (
-                            <WorkflowNode key={node.id || i} title={node.title} type={node.type} inputs={node.inputs} />
+                        {filteredNodes.map((node) => (
+                            <WorkflowNode key={node.id} title={node.title} type={node.type} inputs={node.inputs} />
                         ))}
                     </div>
                 ) : (

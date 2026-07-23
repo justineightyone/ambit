@@ -1,5 +1,4 @@
 import * as React from 'react';
-import { APP_NAME } from '../constants/app';
 import { AppSidebar } from '../features/collections/components/AppSidebar';
 import { AppHeader } from './ui/AppHeader';
 import { SelectionBar } from '../features/library/components/SelectionBar';
@@ -12,10 +11,11 @@ import { VirtualGrid, type VirtualGridHandle } from '../features/library/compone
 import { GridItem } from '../features/library/components/GridItem';
 import { ActivityDock } from './ui/ActivityDock';
 import { AIImage, Collection, ContextMenuState, FilterState, LayoutMode, SmartCollection, SortOption, ToastMessage, ViewMode } from '../types';
-import { Import, Search } from 'lucide-react';
+import { Search } from 'lucide-react';
 import { useSearch } from '../contexts/SearchContext';
 import { useSettingsStore } from '../stores/settingsStore';
 import { useCollectionStore } from '../stores/collectionStore';
+import { useLibraryStore } from '../stores/libraryStore';
 import { useProgressListeners } from '../hooks/useProgressListeners';
 import { setupGlobalLogging } from '../utils/logger';
 import { isCollectionThumbnailImage } from '../utils/thumbnailUtils';
@@ -24,11 +24,14 @@ import type { useAppHandlers } from '../hooks/useAppHandlers';
 import type { useCollectionOperations } from '../hooks/useCollectionOperations';
 import type { useFileOperations } from '../hooks/useFileOperations';
 import type { useModalManager } from '../hooks/useModalManager';
+import { PrivacyProtectionGate } from './ui/PrivacyProtectionGate';
+import { getEffectiveMaskedKeywords } from '../utils/maskingUtils';
 
 setupGlobalLogging();
 
 const StatsDashboard = React.lazy(() => import('./ui/Charts').then(module => ({ default: module.StatsDashboard })));
 const MaintenanceView = React.lazy(() => import('../features/maintenance/components/MaintenanceView').then(module => ({ default: module.MaintenanceView })));
+const LibraryEmptyState = React.lazy(() => import('../features/library/components/LibraryEmptyState'));
 const FILTER_PANEL_LAYOUT_TRANSITION_MS = 540;
 
 const ViewLoadingFallback = () => (
@@ -36,6 +39,23 @@ const ViewLoadingFallback = () => (
         <div className="h-8 w-8 rounded-full border-2 border-sage-500/20 border-t-sage-500 animate-spin" />
     </div>
 );
+
+const LibraryEmptyStateContainer = ({ onImport }: { onImport: () => void }) => {
+    // Isolate progress subscriptions so populated virtual grids do not rerender for
+    // every import update while keeping the store in the existing startup chunk.
+    const isImporting = useLibraryStore(state => state.isImporting);
+    const importMessage = useLibraryStore(state => state.importProgress?.message);
+
+    return (
+        <React.Suspense fallback={<ViewLoadingFallback />}>
+            <LibraryEmptyState
+                isImporting={isImporting}
+                importMessage={importMessage}
+                onImport={onImport}
+            />
+        </React.Suspense>
+    );
+};
 
 interface GridLayoutPosition {
     x: number;
@@ -76,6 +96,7 @@ interface AppLayoutProps {
     fileOps: ReturnType<typeof useFileOperations>;
     onOpenImportModal: () => void;
     clearAllFilters: () => void;
+    workspaceRef: React.RefObject<HTMLElement | null>;
 
     // Grid/View Props
     // Grid/View Props
@@ -83,6 +104,8 @@ interface AppLayoutProps {
     images: AIImage[];
     handlers: AppHandlers;
     setViewingImageId: (id: string | null) => void;
+    onMaintenanceViewerOpenChange: (isOpen: boolean) => void;
+    isViewerShortcutBlocked: boolean;
     toggleFavorite: (id: string) => void | Promise<void>;
     actions: ReturnType<typeof useAppActions>;
     availableTags: string[];
@@ -103,6 +126,7 @@ interface AppLayoutProps {
     handleRemoveFromCollection: () => void;
 
     handleOpenCollectionModal: (mode: 'add' | 'move') => void;
+    onSetCollectionMembership: (imageId: string, collectionId: string, shouldBelong: boolean) => Promise<boolean>;
     onEditCollection: (colId: string) => void;
 }
 
@@ -111,15 +135,15 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
     colOps, setExportIds, modals, addToast,
     viewMode, changeViewMode, searchProps, layoutMode, setLayoutMode,
     sortOption, setSortOption, scopeTotal, scopeName,
-    fileOps, onOpenImportModal, scrollContainerRef,
-    handlers, setViewingImageId,
+    fileOps, onOpenImportModal, workspaceRef, scrollContainerRef,
+    handlers, setViewingImageId, onMaintenanceViewerOpenChange, isViewerShortcutBlocked,
     actions, availableTags, selectedIds,
     handleImageClick, setSelectedImageIndex, handleSelectionToggle,
     activeCollection, activeSmartCollection, handleRangeSelection,
     clearSelection, gridRef, handleLayoutChange,
     isSearchFocused, setIsSearchFocused, lastSelectedId,
 
-    handleRemoveFromCollection, handleOpenCollectionModal, onEditCollection
+    handleRemoveFromCollection, handleOpenCollectionModal, onSetCollectionMembership, onEditCollection
 }) => {
     // Hooks
     useProgressListeners();
@@ -127,12 +151,17 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
     // Stores
     const settings = useSettingsStore(s => s.settings);
     const geminiApiKey = useSettingsStore(s => s.geminiApiKey);
+    const privacyEnabled = useSettingsStore(s => s.privacyEnabled);
+    const privacyMaskIndexStatus = useSettingsStore(s => s.privacyMaskIndexStatus);
+    const privacyExposureBlocked = privacyEnabled && privacyMaskIndexStatus !== 'ready';
+    const effectiveMaskedKeywords = getEffectiveMaskedKeywords(settings);
 
     const allCollections = useCollectionStore(s => s.collections);
 
     // Local State
     const [showSupportPulse, setShowSupportPulse] = React.useState(true);
     const [isFilterPanelLayoutTransitioning, setIsFilterPanelLayoutTransitioning] = React.useState(false);
+    const [isSearchDraftPending, setIsSearchDraftPending] = React.useState(false);
     const previousFilterPanelOpenRef = React.useRef(isFilterPanelOpen);
     const filterPanelTransitionTimerRef = React.useRef<number | null>(null);
 
@@ -149,10 +178,6 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
 
         if (!filterPanelChanged) {
             return;
-        }
-
-        if (filterPanelTransitionTimerRef.current !== null) {
-            window.clearTimeout(filterPanelTransitionTimerRef.current);
         }
 
         setIsFilterPanelLayoutTransitioning(true);
@@ -182,6 +207,8 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
         loadMoreImages,
         isLoadingMore
     } = useSearch();
+    const isSearchPending = isFiltering || isSearchDraftPending;
+    const shouldShowSearchSkeleton = isSearchPending && images.length === 0;
     // const images = useSearchStore(s => s.images); // Images available in context
     // const totalImages = useSearchStore(s => s.totalImages);
     // const isFiltering = useSearchStore(s => s.isFiltering);
@@ -248,7 +275,7 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
             index={index + pinnedCount}
             isSelected={selectedIds.has(img.id)}
             selectedIds={selectedIds}
-            maskedKeywords={settings.maskedKeywords}
+            maskedKeywords={effectiveMaskedKeywords}
             setImages={handlers.setImages}
             onClick={(e, id, idx) => handleImageClick(e, id, idx, setSelectedImageIndex)}
             onToggleSelection={handleSelectionToggle}
@@ -260,7 +287,7 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
             onContextMenu={(e, id) => handlers.setContextMenu({ x: e.clientX, y: e.clientY, imageId: id })}
             isThumbnail={isActiveThumbnail(img)}
         />
-    ), [pinnedCount, selectedIds, settings.maskedKeywords, handlers, handleImageClick, setSelectedImageIndex, handleSelectionToggle, toggleFavorite, images, actions, isActiveThumbnail]);
+    ), [pinnedCount, selectedIds, effectiveMaskedKeywords, handlers, handleImageClick, setSelectedImageIndex, handleSelectionToggle, toggleFavorite, images, actions, isActiveThumbnail]);
 
     return (
         <div className="flex flex-1 overflow-hidden p-3 gap-3">
@@ -318,10 +345,23 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
                 isVisible={isFilterPanelOpen}
             />
 
-            <main className="flex-1 flex flex-col min-w-0 bg-white dark:bg-zinc-900/95 backdrop-blur-xl rounded-2xl shadow-2xl shadow-black/20 border border-zinc-200 dark:border-white/10 overflow-hidden relative">
+            <main
+                ref={workspaceRef}
+                tabIndex={-1}
+                aria-label="Library workspace"
+                className="flex-1 flex flex-col min-w-0 bg-white dark:bg-zinc-900/95 backdrop-blur-xl rounded-2xl shadow-2xl shadow-black/20 border border-zinc-200 dark:border-white/10 overflow-hidden relative"
+            >
                 <div className="absolute inset-0 pointer-events-none bg-[radial-gradient(circle_at_50%_0%,rgba(139,174,124,0.08),transparent_70%)] dark:bg-[radial-gradient(circle_at_50%_0%,rgba(139,174,124,0.15),transparent_60%)] z-10" />
 
-                {isSearchFocused && <div className="absolute inset-0 z-40 bg-black/60 backdrop-blur-sm animate-in fade-in duration-300" onClick={() => setIsSearchFocused(false)} />}
+                {isSearchFocused && searchProps.isAiSearchEnabled && (
+                    <div
+                        className="absolute inset-0 z-40 bg-black/60 backdrop-blur-sm animate-in fade-in duration-300"
+                        onClick={() => {
+                            searchProps.inputRef.current?.blur();
+                            setIsSearchFocused(false);
+                        }}
+                    />
+                )}
 
                 <AppHeader
                     viewMode={viewMode}
@@ -335,7 +375,8 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
                     displayedCount={totalImages}
                     totalCount={scopeTotal}
                     scopeName={scopeName}
-                    isFiltering={isFiltering}
+                    isFiltering={isSearchPending}
+                    onSearchDraftPendingChange={setIsSearchDraftPending}
                     onImport={onOpenImportModal}
                     onSlideshow={() => { modals.setSlideshowShuffle(false); modals.openModal('slideshow'); }}
                     clearAllFilters={clearAllFilters}
@@ -343,7 +384,12 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
 
                 <div className="flex-1 flex overflow-hidden min-h-0 relative">
                     <div ref={scrollContainerRef} className={`flex-1 ${viewMode === 'grid' ? 'overflow-y-scroll overflow-x-hidden custom-scrollbar' : 'overflow-hidden'}`}>
-                        <ErrorBoundary>
+                        {privacyExposureBlocked ? (
+                            <PrivacyProtectionGate onOpenSettings={() => {
+                                modals.setInitialSettingsTab('privacy');
+                                modals.openModal('settings');
+                            }} />
+                        ) : <ErrorBoundary>
                             {viewMode === 'dashboard' ? (
                                 <React.Suspense fallback={<ViewLoadingFallback />}>
                                     <StatsDashboard images={images} onFilter={(t, v) => {
@@ -368,7 +414,7 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
                                         onGroupImages={handlers.handleGroupImages}
                                         onViewImage={(id) => setViewingImageId(id)}
                                         onRegenerateThumbnails={fileOps.regenerateThumbnails}
-                                        maskedKeywords={settings.maskedKeywords}
+                                        maskedKeywords={effectiveMaskedKeywords}
                                         onUpdatePrompt={handlers.handleUpdatePrompt}
                                         onUpdateModel={handlers.handleUpdateModel}
                                         onUpdateTool={handlers.handleUpdateTool}
@@ -384,12 +430,15 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
                                         }}
                                         onToggleFavorite={(id) => toggleFavorite(id)}
                                         onTogglePin={actions.handlePinImage}
+                                        onSetCollectionMembership={onSetCollectionMembership}
                                         availableTags={availableTags}
+                                        onViewerOpenChange={onMaintenanceViewerOpenChange}
+                                        isShortcutBlocked={isViewerShortcutBlocked}
                                     />
                                 </React.Suspense>
-                            ) : (images.length > 0 || isFiltering) ? (
+                            ) : (images.length > 0 || isSearchPending) ? (
                                 <>
-                                    {isFiltering ? (
+                                    {shouldShowSearchSkeleton ? (
                                         <GridSkeleton layout={layoutMode} />
                                     ) : viewMode === 'timeline' ? (
                                         <TimelineView
@@ -397,7 +446,7 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
                                             selectedIds={selectedIds}
                                             thumbnailSize={settings.thumbnailSize}
                                             sortOption={sortOption}
-                                            maskedKeywords={settings.maskedKeywords}
+                                            maskedKeywords={effectiveMaskedKeywords}
                                             onImageClick={(e, id, index) => handleImageClick(e, id, index, setSelectedImageIndex)}
                                             onSelectionToggle={handleSelectionToggle}
                                             onToggleFavorite={(e, id) => { toggleFavorite(id); }}
@@ -420,7 +469,7 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
                                                     isCollapsed={modals.isPinnedShelfCollapsed}
                                                     onToggleCollapse={() => modals.setIsPinnedShelfCollapsed((p: boolean) => !p)}
                                                     selectedIds={selectedIds}
-                                                    maskedKeywords={settings.maskedKeywords}
+                                                    maskedKeywords={effectiveMaskedKeywords}
                                                     setImages={handlers.setImages}
                                                     onImageClick={(e, id, index) => handleImageClick(e, id, index, setSelectedImageIndex)}
                                                     onToggleSelection={handleSelectionToggle}
@@ -468,55 +517,36 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
                                         </>
                                     )}
                                 </>
+                            ) : globalTotal === 0 ? (
+                                <LibraryEmptyStateContainer onImport={onOpenImportModal} />
                             ) : (
                                 <div className="h-full flex flex-col items-center justify-center text-gray-500 p-8 text-center max-w-md mx-auto">
-                                    {globalTotal === 0 ? (
-                                        <>
-                                            <div className="p-6 bg-sage-100 dark:bg-sage-500/10 rounded-full mb-6 border border-sage-200 dark:border-sage-500/20 animate-in zoom-in duration-500">
-                                                <Import className="w-12 h-12 text-sage-600 dark:text-sage-400 opacity-70" />
-                                            </div>
-                                            <h3 className="text-2xl font-bold mb-3 text-gray-800 dark:text-gray-100">Your Library is Empty</h3>
-                                            <p className="text-gray-500 dark:text-gray-400 mb-8 leading-relaxed">
-                                                Import your images to start organizing, searching, and exploring your AI creations with {APP_NAME}.
-                                            </p>
-                                            <button
-                                                onClick={onOpenImportModal}
-                                                className="px-8 py-3.5 bg-sage-600 hover:bg-sage-500 text-white rounded-2xl font-bold shadow-xl shadow-sage-500/20 transition-all hover:scale-105 active:scale-95 flex items-center gap-2"
-                                            >
-                                                <Import className="w-5 h-5" />
-                                                Import Images
-                                            </button>
-                                        </>
-                                    ) : (
-                                        <>
-                                            <div className="p-6 bg-zinc-100 dark:bg-white/5 rounded-full mb-6 border border-zinc-200 dark:border-white/5 opacity-50">
-                                                <Search className="w-12 h-12 text-zinc-400 dark:text-zinc-500" />
-                                            </div>
-                                            <h3 className="text-2xl font-bold mb-3 text-gray-800 dark:text-gray-100">No Matches Found</h3>
-                                            <p className="text-gray-500 dark:text-gray-400 mb-8 leading-relaxed">
-                                                We couldn't find any images matching your current filters. Try adjusting your search or clearing filters.
-                                            </p>
-                                            <button
-                                                onClick={clearAllFilters}
-                                                className="px-8 py-3.5 bg-zinc-800 dark:bg-white/10 hover:bg-zinc-700 dark:hover:bg-white/20 text-white rounded-2xl font-bold transition-all hover:scale-105 active:scale-95 flex items-center gap-2"
-                                            >
-                                                Clear All Filters
-                                            </button>
-                                        </>
-                                    )}
+                                    <div className="p-6 bg-zinc-100 dark:bg-white/5 rounded-full mb-6 border border-zinc-200 dark:border-white/5 opacity-50">
+                                        <Search className="w-12 h-12 text-zinc-400 dark:text-zinc-500" />
+                                    </div>
+                                    <h3 className="text-2xl font-bold mb-3 text-gray-800 dark:text-gray-100">No Matches Found</h3>
+                                    <p className="text-gray-500 dark:text-gray-400 mb-8 leading-relaxed">
+                                        We couldn't find any images matching your current filters. Try adjusting your search or clearing filters.
+                                    </p>
+                                    <button
+                                        onClick={clearAllFilters}
+                                        className="px-8 py-3.5 bg-zinc-800 dark:bg-white/10 hover:bg-zinc-700 dark:hover:bg-white/20 text-white rounded-2xl font-bold transition-all hover:scale-105 active:scale-95 flex items-center gap-2"
+                                    >
+                                        Clear All Filters
+                                    </button>
                                 </div>
                             )}
-                        </ErrorBoundary>
+                        </ErrorBoundary>}
                     </div>
                 </div>
 
-                <SelectionBar
+                {!privacyExposureBlocked && <SelectionBar
                     selectedIds={selectedIds}
                     filteredImages={images}
                     lastSelectedId={lastSelectedId}
                     isExporting={fileOps.isExporting}
                     confirmDelete={settings.confirmDelete}
-                    maskedKeywords={settings.maskedKeywords}
+                    maskedKeywords={effectiveMaskedKeywords}
                     onClearSelection={clearSelection}
                     onDelete={settings.confirmDelete ? () => modals.openModal('deleteConfirm') : actions.executeDelete}
                     onExport={() => modals.openModal('export')}
@@ -528,7 +558,7 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
                     onCompare={() => modals.openModal('compare')}
                     activeCollectionId={filters.collectionId}
                     onRemoveFromCollection={handleRemoveFromCollection}
-                />
+                />}
 
                 <ActivityDock />
             </main>

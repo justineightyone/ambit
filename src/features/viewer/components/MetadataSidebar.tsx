@@ -29,7 +29,7 @@ interface MetadataSidebarProps {
     onUpdateNegativePrompt?: (imageId: string, negativePrompt: string) => void;
     onUpdateModel?: (imageId: string, newModel: string) => void;
     onUpdateTool?: (id: string, tool: GeneratorTool) => void;
-    onAddToCollection: (imageId: string, colId: string) => void;
+    onSetCollectionMembership: (imageId: string, colId: string, shouldBelong: boolean) => Promise<boolean>;
     onSearch: (term: string) => void;
     onClose: () => void;
     onRecoverMetadata?: () => void;
@@ -65,7 +65,7 @@ export const MetadataSidebar: React.FC<MetadataSidebarProps> = ({
     onUpdateNegativePrompt,
     onUpdateModel,
     onUpdateTool,
-    onAddToCollection,
+    onSetCollectionMembership,
     onSearch,
     onClose,
     onRecoverMetadata,
@@ -95,7 +95,7 @@ export const MetadataSidebar: React.FC<MetadataSidebarProps> = ({
                     {(image.metadata.overrideModel || image.metadata.model !== 'Unknown' || image.metadata.modelHash) && (
                         <span
                             className="px-2 py-0.5 rounded bg-gray-200 dark:bg-zinc-800 border border-gray-200 dark:border-white/10 text-gray-600 dark:text-gray-300 font-mono truncate max-w-[200px]"
-                            title={image.metadata.overrideModel || image.metadata.model !== 'Unknown' ? (image.metadata.overrideModel || image.metadata.model) : (image.metadata.modelHash || '')}
+                            title={image.metadata.overrideModel || image.metadata.model !== 'Unknown' ? (image.metadata.overrideModel || image.metadata.model) : image.metadata.modelHash}
                         >
                             {image.metadata.overrideModel || image.metadata.model !== 'Unknown'
                                 ? formatModelName(image.metadata.overrideModel || image.metadata.model)
@@ -165,7 +165,7 @@ export const MetadataSidebar: React.FC<MetadataSidebarProps> = ({
                         setPromptValue={setPromptValue}
                         negativePromptValue={negativePromptValue}
                         setNegativePromptValue={setNegativePromptValue}
-                        onAddToCollection={onAddToCollection}
+                        onSetCollectionMembership={onSetCollectionMembership}
                         onUpdatePrompt={onUpdatePrompt}
                         onUpdateNegativePrompt={onUpdateNegativePrompt}
                         onUpdateNotes={onUpdateNotes}

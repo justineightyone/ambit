@@ -3,26 +3,58 @@ import { fireEvent, render, screen } from '../../../test/testUtils';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { AppHeader } from '../AppHeader';
 import { createInitialLiveWatchSessionState, useLibraryStore } from '../../../stores/libraryStore';
+import { ToastContext } from '../../../contexts/ToastContext';
+
+const mocks = vi.hoisted(() => ({
+    browserMode: false,
+    setSettings: vi.fn(),
+    searchBarProps: null as Record<string, unknown> | null,
+}));
 
 vi.mock('../../../hooks/useLibraryContext', () => ({
     useLibraryContext: () => ({
         settings: { thumbnailSize: 200 },
-        setSettings: vi.fn(),
+        setSettings: mocks.setSettings,
         recentSearches: [],
         setRecentSearches: vi.fn()
     })
 }));
 
 vi.mock('../../../features/filters/components/SearchBar', () => ({
-    SearchBar: () => <div data-testid="search-bar" />
+    SearchBar: (props: Record<string, unknown>) => {
+        mocks.searchBarProps = props;
+        return <div data-testid="search-bar" data-submit-navigates-to-grid={String(props.submitNavigatesToGrid)} />;
+    }
 }));
 
 vi.mock('../../../features/library/components/ViewControls', () => ({
-    ViewControls: () => <div data-testid="view-controls" />
+    ViewControls: ({ setThumbnailSize, setLayoutMode, setSortOption, onSlideshow, showLayoutSwitcher, showSlideshowButton }: {
+        setThumbnailSize: (size: number) => void;
+        setLayoutMode: (mode: 'masonry') => void;
+        setSortOption: (option: 'date_desc') => void;
+        onSlideshow: () => void;
+        showLayoutSwitcher: boolean;
+        showSlideshowButton: boolean;
+    }) => (
+        <div
+            data-testid="view-controls"
+            data-layout={String(showLayoutSwitcher)}
+            data-slideshow={String(showSlideshowButton)}
+        >
+            <button onClick={() => setThumbnailSize(320)}>Resize Thumbnails</button>
+            <button onClick={() => setLayoutMode('masonry')}>Set Layout</button>
+            <button onClick={() => setSortOption('date_desc')}>Set Sort</button>
+            <button onClick={onSlideshow}>Start Slideshow</button>
+        </div>
+    )
 }));
 
 vi.mock('../../../features/filters/components/ActiveFilters', () => ({
     ActiveFilters: () => <div data-testid="active-filters" />
+}));
+
+vi.mock('../../../services/runtime', () => ({
+    isBrowserMockMode: () => mocks.browserMode,
 }));
 
 const resetLibraryStore = () => {
@@ -70,7 +102,8 @@ const defaultProps = {
         submitSearch: vi.fn(),
         isFocused: false,
         onFocus: vi.fn(),
-        onBlur: vi.fn()
+        onBlur: vi.fn(),
+        onOpenSearchHelp: vi.fn()
     },
     layoutMode: 'masonry' as const,
     setLayoutMode: vi.fn(),
@@ -82,12 +115,15 @@ const defaultProps = {
     onImport: vi.fn(),
     onSlideshow: vi.fn(),
     clearAllFilters: vi.fn(),
-    isFiltering: false
+    isFiltering: false,
+    onSearchDraftPendingChange: vi.fn(),
 };
 
 describe('AppHeader', () => {
     beforeEach(() => {
         vi.clearAllMocks();
+        mocks.browserMode = false;
+        mocks.searchBarProps = null;
         resetLibraryStore();
     });
 
@@ -95,8 +131,8 @@ describe('AppHeader', () => {
         useLibraryStore.getState().setIsLiveWatching(true);
 
         const { container } = render(<AppHeader {...defaultProps} />);
-        const liveWatchButton = screen.getByTitle(/Live Watch enabled/);
-        const importButton = screen.getByTitle(/Import images\./);
+        const liveWatchButton = screen.getByRole('button', { name: 'Disable Live Watch' });
+        const importButton = screen.getByRole('button', { name: 'Import Images' });
 
         expect(liveWatchButton.className).toContain('bg-sage-500/10');
         expect(liveWatchButton.className).toContain('text-sage-600');
@@ -119,8 +155,8 @@ describe('AppHeader', () => {
         });
 
         const { container } = render(<AppHeader {...defaultProps} />);
-        const importButton = screen.getByTitle(/Import images\./);
-        const liveWatchButton = screen.getByTitle(/Live Watch enabled/);
+        const importButton = screen.getByRole('button', { name: 'Import Images' });
+        const liveWatchButton = screen.getByRole('button', { name: 'Disable Live Watch' });
 
         expect(screen.queryByTestId('app-header-progress-rail')).toBeNull();
         expect(container.querySelector('.bg-violet-500')).toBeNull();
@@ -143,8 +179,8 @@ describe('AppHeader', () => {
         });
 
         render(<AppHeader {...defaultProps} />);
-        const importButton = screen.getByTitle(/Import images\./);
-        const liveWatchButton = screen.getByTitle(/Live Watch enabled/);
+        const importButton = screen.getByRole('button', { name: 'Import Images' });
+        const liveWatchButton = screen.getByRole('button', { name: 'Disable Live Watch' });
 
         expect(screen.queryByTestId('app-header-progress-rail')).toBeNull();
         expect(liveWatchButton.className).toContain('ring-sage-500/20');
@@ -159,7 +195,7 @@ describe('AppHeader', () => {
         });
 
         const { container } = render(<AppHeader {...defaultProps} />);
-        const importButton = screen.getByTitle(/Import images\./);
+        const importButton = screen.getByRole('button', { name: 'Import Images' });
 
         expect(screen.getByTestId('app-header-progress-rail')).toBeTruthy();
         expect(container.querySelector('.bg-sage-500')).toBeTruthy();
@@ -175,7 +211,7 @@ describe('AppHeader', () => {
         const { rerender } = render(<AppHeader {...defaultProps} />);
 
         expect(screen.getByTestId('app-header-progress-rail')).toBeTruthy();
-        expect(screen.getByTitle(/Import images\./).className).toContain('bg-sage-500/20');
+        expect(screen.getByRole('button', { name: 'Import Images' }).className).toContain('bg-sage-500/20');
 
         useLibraryStore.setState({
             isImporting: false,
@@ -186,15 +222,123 @@ describe('AppHeader', () => {
         rerender(<AppHeader {...defaultProps} />);
 
         expect(screen.getByTestId('app-header-progress-rail')).toBeTruthy();
-        expect(screen.getByTitle(/Import images\./).className).toContain('bg-sage-500/20');
+        expect(screen.getByRole('button', { name: 'Import Images' }).className).toContain('bg-sage-500/20');
     });
 
     it('opens the import flow from the header import button', () => {
         const onImport = vi.fn();
 
         render(<AppHeader {...defaultProps} onImport={onImport} />);
-        fireEvent.click(screen.getByTitle(/Import images\./));
+        fireEvent.click(screen.getByRole('button', { name: 'Import Images' }));
 
         expect(onImport).toHaveBeenCalledTimes(1);
+    });
+
+    it('toggles Live Watch and forwards view-control commands', () => {
+        const setLayoutMode = vi.fn();
+        const setSortOption = vi.fn();
+        const onSlideshow = vi.fn();
+        render(
+            <AppHeader
+                {...defaultProps}
+                setLayoutMode={setLayoutMode}
+                setSortOption={setSortOption}
+                onSlideshow={onSlideshow}
+            />
+        );
+
+        fireEvent.click(screen.getByRole('button', { name: 'Enable Live Watch' }));
+        expect(useLibraryStore.getState().isLiveWatching).toBe(true);
+        fireEvent.click(screen.getByText('Resize Thumbnails'));
+        const updateSettings = mocks.setSettings.mock.calls[0][0] as (settings: { thumbnailSize: number }) => { thumbnailSize: number };
+        expect(updateSettings({ thumbnailSize: 200 })).toEqual({ thumbnailSize: 320 });
+        fireEvent.click(screen.getByText('Set Layout'));
+        fireEvent.click(screen.getByText('Set Sort'));
+        fireEvent.click(screen.getByText('Start Slideshow'));
+        expect(setLayoutMode).toHaveBeenCalledWith('masonry');
+        expect(setSortOption).toHaveBeenCalledWith('date_desc');
+        expect(onSlideshow).toHaveBeenCalledTimes(1);
+    });
+
+    it('blocks Live Watch in browser mode and shows the mock-mode indicator', () => {
+        mocks.browserMode = true;
+        const addToast = vi.fn();
+        render(
+            <ToastContext.Provider value={{ addToast, removeToast: vi.fn() }}>
+                <AppHeader {...defaultProps} />
+            </ToastContext.Provider>
+        );
+
+        expect(screen.getByText('Browser Mock')).toBeTruthy();
+        fireEvent.click(screen.getByRole('button', { name: 'Enable Live Watch' }));
+
+        expect(addToast).toHaveBeenCalledWith('Unavailable in browser mock mode.', 'info');
+        expect(useLibraryStore.getState().isLiveWatching).toBe(false);
+    });
+
+    it('falls back to console messaging in browser mode without a toast provider', () => {
+        mocks.browserMode = true;
+        const info = vi.spyOn(console, 'info').mockImplementation(() => undefined);
+        render(<AppHeader {...defaultProps} />);
+
+        fireEvent.click(screen.getByRole('button', { name: 'Enable Live Watch' }));
+
+        expect(info).toHaveBeenCalledWith('Unavailable in browser mock mode.');
+        info.mockRestore();
+    });
+
+    it('shows model resolution and background healing progress with the correct priority and color', () => {
+        useLibraryStore.setState({
+            isResolvingModels: true,
+            modelResolutionProgress: { current: 1, total: 2, message: 'Resolving...' }
+        });
+        const { container, rerender } = render(<AppHeader {...defaultProps} />);
+        expect(container.querySelector('.bg-sage-500')).toBeTruthy();
+
+        useLibraryStore.setState({
+            isResolvingModels: false,
+            modelResolutionProgress: null,
+            isBackgroundHealingActive: true,
+            backgroundHealingProgress: { current: 0, total: 0, message: 'Healing...' }
+        });
+        rerender(<AppHeader {...defaultProps} />);
+
+        expect(container.querySelector('.bg-violet-500')).toBeTruthy();
+        expect(screen.getByTestId('app-header-progress-rail').firstElementChild?.getAttribute('style'))
+            .toContain('width: 100%');
+    });
+
+    it('hides grid-only controls outside grid and timeline views', () => {
+        const { rerender } = render(<AppHeader {...defaultProps} viewMode="timeline" />);
+        expect(screen.getByTestId('view-controls').getAttribute('data-layout')).toBe('false');
+        expect(screen.getByTestId('view-controls').getAttribute('data-slideshow')).toBe('true');
+
+        rerender(<AppHeader {...defaultProps} viewMode="dashboard" />);
+        expect(screen.getByTestId('view-controls').getAttribute('data-slideshow')).toBe('false');
+    });
+
+    it('marks dashboard and maintenance searches as Grid-bound submissions', () => {
+        const { rerender } = render(<AppHeader {...defaultProps} viewMode="grid" />);
+        expect(screen.getByTestId('search-bar').getAttribute('data-submit-navigates-to-grid')).toBe('false');
+
+        rerender(<AppHeader {...defaultProps} viewMode="timeline" />);
+        expect(screen.getByTestId('search-bar').getAttribute('data-submit-navigates-to-grid')).toBe('false');
+
+        rerender(<AppHeader {...defaultProps} viewMode="dashboard" />);
+        expect(screen.getByTestId('search-bar').getAttribute('data-submit-navigates-to-grid')).toBe('true');
+
+        rerender(<AppHeader {...defaultProps} viewMode="maintenance" />);
+        expect(screen.getByTestId('search-bar').getAttribute('data-submit-navigates-to-grid')).toBe('true');
+    });
+
+    it('forwards draft-pending changes from the search bar', () => {
+        const onSearchDraftPendingChange = vi.fn();
+        render(<AppHeader {...defaultProps} onSearchDraftPendingChange={onSearchDraftPendingChange} />);
+
+        const onDraftPendingChange = mocks.searchBarProps?.onDraftPendingChange as ((isPending: boolean) => void) | undefined;
+        expect(onDraftPendingChange).toBeTypeOf('function');
+        onDraftPendingChange?.(true);
+
+        expect(onSearchDraftPendingChange).toHaveBeenCalledWith(true);
     });
 });

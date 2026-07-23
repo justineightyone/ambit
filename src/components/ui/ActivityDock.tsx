@@ -13,6 +13,7 @@ import {
     THUMBNAIL_QUEUE_FAILURE_FOOTER,
     THUMBNAIL_QUEUE_RUNNING_FOOTER
 } from '../../hooks/thumbnailQueueProgress';
+import { TooltipButton } from './InfoTooltip';
 
 const ELAPSED_VISIBLE_AFTER_MS = 5000;
 const LIVE_WATCH_DOCK_REVEAL_MS = 2500;
@@ -116,7 +117,7 @@ const useLiveWatchPresentation = (
             }
 
             const now = Date.now();
-            const revealedAt = presentation.revealedAt ?? now;
+            const revealedAt = presentation.revealedAt!;
             const minVisibleRemainingMs = Math.max(0, LIVE_WATCH_DOCK_MIN_VISIBLE_MS - (now - revealedAt));
             const closeDelayMs = Math.max(LIVE_WATCH_DOCK_CLOSE_GRACE_MS, minVisibleRemainingMs);
             const timer = window.setTimeout(() => {
@@ -144,11 +145,7 @@ const useLiveWatchPresentation = (
         }
 
         const timer = window.setTimeout(() => {
-            setPresentation(prev => (
-                prev.key === presentationKey && presentationKey !== dismissedPresentationKey
-                    ? { key: presentationKey, visible: true, revealedAt: Date.now() }
-                    : prev
-            ));
+            setPresentation({ key: presentationKey, visible: true, revealedAt: Date.now() });
         }, LIVE_WATCH_DOCK_REVEAL_MS);
         return () => window.clearTimeout(timer);
     }, [
@@ -373,21 +370,23 @@ export const ActivityDock: React.FC = () => {
                     className="fixed bottom-8 right-8 z-[100]"
                 >
                     {isActivityDockMinimized ? (
-                        <motion.div
-                            layoutId="dock-content"
-                            onClick={() => setIsActivityDockMinimized(false)}
-                            className={`group bg-white/80 dark:bg-zinc-900/80 backdrop-blur-xl border border-white/20 dark:border-white/10 p-2.5 rounded-full shadow-xl flex items-center gap-3 cursor-pointer hover:scale-105 transition-transform ${accentClasses.pillHover}`}
-                            title="Click to expand details"
-                        >
-                            <motion.div layout="position" className={accentClasses.iconText}>
-                                {shouldUseSparkles ? <Sparkles className={`w-5 h-5 ${shouldPulseSparkles ? 'animate-pulse' : ''}`} /> : <Loader2 className="w-5 h-5 animate-spin" />}
-                            </motion.div>
-                            <motion.div layout="position" className="w-12 h-1 bg-gray-200 dark:bg-zinc-700 rounded-full overflow-hidden mr-1">
-                                <div
-                                    className={`h-full ${isLiveWatchTone || !isLowPriority ? 'bg-sage-500' : 'bg-violet-500'}`}
-                                    style={{ width: `${percent}%` }}
-                                />
-                            </motion.div>
+                        <motion.div layoutId="dock-content">
+                            <TooltipButton
+                                label="Expand Activity Details"
+                                content="Expand Activity Details"
+                                onClick={() => setIsActivityDockMinimized(false)}
+                                className={`group bg-white/80 dark:bg-zinc-900/80 backdrop-blur-xl border border-white/20 dark:border-white/10 p-2.5 rounded-full shadow-xl flex items-center gap-3 cursor-pointer hover:scale-105 transition-transform ${accentClasses.pillHover}`}
+                            >
+                                <motion.div layout="position" className={accentClasses.iconText}>
+                                    {shouldUseSparkles ? <Sparkles className={`w-5 h-5 ${shouldPulseSparkles ? 'animate-pulse' : ''}`} /> : <Loader2 className="w-5 h-5 animate-spin" />}
+                                </motion.div>
+                                <motion.div layout="position" className="w-12 h-1 bg-gray-200 dark:bg-zinc-700 rounded-full overflow-hidden mr-1">
+                                    <div
+                                        className={`h-full ${isLiveWatchTone || !isLowPriority ? 'bg-sage-500' : 'bg-violet-500'}`}
+                                        style={{ width: `${percent}%` }}
+                                    />
+                                </motion.div>
+                            </TooltipButton>
                         </motion.div>
                     ) : (
                         <motion.div
@@ -422,18 +421,20 @@ export const ActivityDock: React.FC = () => {
                                         </p>
                                     </motion.div>
                                 </div>
-                                <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                                <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity">
                                     <button
+                                        type="button"
                                         onClick={() => setIsActivityDockMinimized(true)}
+                                        aria-label="Minimize Activity Details"
                                         className="p-1.5 hover:bg-black/5 dark:hover:bg-white/5 rounded-lg text-gray-400 hover:text-gray-900 dark:hover:text-white transition-all hover:scale-105 active:scale-95"
-                                        title="Minimize"
                                     >
                                         <Minus className="w-3.5 h-3.5" />
                                     </button>
                                     <button
+                                        type="button"
                                         onClick={dismissDock}
+                                        aria-label="Dismiss Activity Details"
                                         className="p-1.5 hover:bg-black/5 dark:hover:bg-white/5 rounded-lg text-gray-400 hover:text-gray-900 dark:hover:text-white transition-all hover:scale-105 active:scale-95"
-                                        title="Dismiss"
                                     >
                                         <X className="w-3.5 h-3.5" />
                                     </button>

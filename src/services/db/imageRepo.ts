@@ -19,6 +19,7 @@ import {
     clearAllCollectionThumbnailCaches,
     clearCollectionThumbnailCacheForCollections,
     clearCollectionThumbnailCacheForImages,
+    clearInvokeBoardThumbnailCaches,
 } from './collectionRepo';
 import { scanImageNative } from '../metadataParser';
 
@@ -89,8 +90,8 @@ export const shouldTrashThumbnail = (
     if (!thumbnailPath) return false;
     if (!imagePath) return true;
 
-    const normalizedImagePath = normalizePath(urlToPath(imagePath) || imagePath);
-    const normalizedThumbnailPath = normalizePath(urlToPath(thumbnailPath) || thumbnailPath);
+    const normalizedImagePath = normalizePath(urlToPath(imagePath));
+    const normalizedThumbnailPath = normalizePath(urlToPath(thumbnailPath));
 
     return normalizedImagePath.toLowerCase() !== normalizedThumbnailPath.toLowerCase();
 };
@@ -104,7 +105,7 @@ const buildPersistableImageRecord = (image: AIImage): PersistableImageRecord => 
     fileHash: image.fileHash || null,
     timestamp: image.timestamp,
     metadataJson: JSON.stringify(image.metadata),
-    thumbnailPath: urlToPath(image.thumbnailUrl) ?? '',
+    thumbnailPath: urlToPath(image.thumbnailUrl),
     microThumbnail: image.microThumbnail || null,
     thumbnailSource: image.thumbnailSource || null,
     isFavorite: !!image.isFavorite,
@@ -127,9 +128,7 @@ const persistImageRecords = async (
     db: Awaited<ReturnType<typeof getDb>>
 ) => {
     const CHUNK_SIZE = 5000;
-    if (records.length > 0) {
-        console.log(`[RepoDebug] Saving batch. First record originalMetadataJson:`, records[0].originalMetadataJson ? records[0].originalMetadataJson.substring(0, 100) : 'NULL');
-    }
+    console.log(`[RepoDebug] Saving batch. First record originalMetadataJson:`, records[0].originalMetadataJson ? records[0].originalMetadataJson.substring(0, 100) : 'NULL');
 
     for (let i = 0; i < records.length; i += CHUNK_SIZE) {
         const chunk = records.slice(i, i + CHUNK_SIZE);
@@ -446,7 +445,7 @@ export const syncCollectionImages = async (ids?: string[]) => {
         if (ids && ids.length > 0) {
             await clearCollectionThumbnailCacheForImages(ids);
         } else {
-            await clearAllCollectionThumbnailCaches();
+            await clearInvokeBoardThumbnailCaches();
         }
         console.log('[DB] Bulk collection sync complete.');
     });
@@ -845,8 +844,6 @@ export const deleteImage = async (id: string) => {
 };
 
 const removeTombstones = async (db: Awaited<ReturnType<typeof getDb>>, ids: string[]) => {
-    if (ids.length === 0) return;
-
     for (const chunk of chunkItems(ids)) {
         const placeholders = chunk.map(() => '?').join(',');
         await db.execute(`DELETE FROM removed_images WHERE id IN (${placeholders})`, chunk);
@@ -1221,28 +1218,6 @@ export const updateImagesBoard = async (ids: string[], boardId: string | null) =
     await clearCollectionThumbnailCacheForImages(normalizedIds);
 };
 
-/**
- * Purges the entire library database by calling the backend command.
- * Returns the backend's message (e.g., instructions to restart).
- */
-export const purgeLibrary = async (): Promise<string> => {
-    if (isBrowserMockMode()) {
-        getBrowserMockImages().forEach(image => updateBrowserMockImage(image.id, { isDeleted: true }));
-        return 'Browser mock library cleared for this session.';
-    }
-
-    console.log('[Purge] Calling backend to purge database...');
-    const result = await commands.purgeDatabase();
-    console.log('[Purge] Backend response:', result);
-
-    // The result is either { status: 'ok', data: message } or { status: 'error', error: message }
-    if (result.status === 'ok') {
-        return result.data;
-    } else {
-        throw new Error(result.error);
-    }
-};
-
 export const checkHiddenContentAvailability = async (): Promise<{ hasIntermediates: boolean, hasGrids: boolean }> => {
     if (isBrowserMockMode()) {
         const images = getBrowserMockImages();
@@ -1275,7 +1250,7 @@ export const clearAllThumbnailPaths = async (): Promise<number> => {
     return await dbMutex.dispatch(async () => {
         const db = await getDb();
         let retries = 3;
-        while (retries > 0) {
+        while (true) {
             try {
                 const result = await db.execute(
                     'UPDATE images SET thumbnail_path = NULL, micro_thumbnail = NULL, thumbnail_source = NULL, thumbnail_version = 0, thumbnail_failure_count = 0, thumbnail_last_error = NULL, thumbnail_last_attempt_at = NULL WHERE thumbnail_path IS NOT NULL AND thumbnail_path != ""'
@@ -1297,7 +1272,6 @@ export const clearAllThumbnailPaths = async (): Promise<number> => {
                 }
             }
         }
-        return 0;
     });
 };
 

@@ -45,10 +45,16 @@ pub(crate) fn merge_comfyui_metadata(
     diagnostics.unique_output_root_sampler_count =
         graph_diagnostics.unique_output_root_sampler_count;
     diagnostics.output_ambiguous = graph_diagnostics.output_ambiguous;
+    diagnostics.authoritative_sampler_custom_path =
+        graph_diagnostics.authoritative_sampler_custom_path;
     for layer in &graph_diagnostics.attempted_layers {
         diagnostics.attempt(*layer);
     }
 
+    if graph_diagnostics.authoritative_sampler_custom_path {
+        clear_core_fields(base);
+        clear_core_field_sources(&mut diagnostics);
+    }
     merge_graph_metadata(base, &mut graph_meta, &graph_diagnostics, &mut diagnostics);
     base.tool = "ComfyUI".to_string();
 
@@ -654,6 +660,12 @@ fn extract_comfyui_graph_with_diagnostics(
         output_diagnostics.selected_output_candidate_count;
     diagnostics.unique_output_root_sampler_count = output_diagnostics.unique_root_sampler_count;
     diagnostics.output_ambiguous = output_diagnostics.ambiguous;
+    diagnostics.authoritative_sampler_custom_path =
+        output_diagnostics.authoritative_sampler_custom_path;
+    if output_diagnostics.authoritative_sampler_custom_path {
+        clear_core_fields(&mut meta);
+        clear_core_field_sources(&mut diagnostics);
+    }
     let before = ComfyMetadataSnapshot::from_metadata(&meta);
     meta.merge_if_missing(traversal_meta);
     diagnostics.record_diff(&before, &meta, ComfyParseLayer::SamplerTraversal);
@@ -663,7 +675,23 @@ fn extract_comfyui_graph_with_diagnostics(
     // scan specifically for standard KSamplers using the smart evaluator logic.
     if meta.is_incomplete() {
         diagnostics.attempt(ComfyParseLayer::SamplerFallback);
-        let sampler_meta = evaluator.extract_from_all_samplers();
+        let mut sampler_meta = evaluator.extract_from_all_samplers();
+        if output_diagnostics.authoritative_model {
+            sampler_meta.model = "Unknown".to_string();
+            sampler_meta.model_hash = None;
+        }
+        if output_diagnostics.authoritative_cfg {
+            sampler_meta.cfg = 0.0;
+        }
+        if output_diagnostics.authoritative_positive_prompt {
+            sampler_meta.positive_prompt.clear();
+        }
+        if output_diagnostics.authoritative_negative_prompt {
+            sampler_meta.negative_prompt.clear();
+        }
+        if output_diagnostics.authoritative_sampler_custom_path {
+            clear_core_fields(&mut sampler_meta);
+        }
         let before = ComfyMetadataSnapshot::from_metadata(&meta);
         meta.merge_if_missing(sampler_meta);
         diagnostics.record_diff(&before, &meta, ComfyParseLayer::SamplerFallback);
@@ -673,11 +701,52 @@ fn extract_comfyui_graph_with_diagnostics(
     // If we still found nothing (e.g. graph is totally disconnected or custom nodes unknown to evaluator)
     if meta.is_incomplete() {
         diagnostics.attempt(ComfyParseLayer::GlobalScan);
-        let scan_meta = global_scan(&graph);
+        let mut scan_meta = global_scan(&graph);
+        if output_diagnostics.authoritative_model {
+            scan_meta.model = "Unknown".to_string();
+            scan_meta.model_hash = None;
+        }
+        if output_diagnostics.authoritative_cfg {
+            scan_meta.cfg = 0.0;
+        }
+        if output_diagnostics.authoritative_positive_prompt {
+            scan_meta.positive_prompt.clear();
+        }
+        if output_diagnostics.authoritative_negative_prompt {
+            scan_meta.negative_prompt.clear();
+        }
+        if output_diagnostics.authoritative_sampler_custom_path {
+            clear_core_fields(&mut scan_meta);
+        }
         let before = ComfyMetadataSnapshot::from_metadata(&meta);
         meta.merge_if_missing(scan_meta);
         diagnostics.record_diff(&before, &meta, ComfyParseLayer::GlobalScan);
     }
 
     (meta, diagnostics)
+}
+
+fn clear_core_fields(meta: &mut ImageMetadata) {
+    meta.model = "Unknown".to_string();
+    meta.model_hash = None;
+    meta.seed = None;
+    meta.steps = 0;
+    meta.cfg = 0.0;
+    meta.sampler = "Unknown".to_string();
+    meta.positive_prompt.clear();
+    meta.negative_prompt.clear();
+}
+
+fn clear_core_field_sources(diagnostics: &mut ComfyParseDiagnostics) {
+    for field in [
+        ComfyMetadataField::Model,
+        ComfyMetadataField::Seed,
+        ComfyMetadataField::Steps,
+        ComfyMetadataField::Cfg,
+        ComfyMetadataField::Sampler,
+        ComfyMetadataField::PositivePrompt,
+        ComfyMetadataField::NegativePrompt,
+    ] {
+        diagnostics.field_sources.remove(&field);
+    }
 }

@@ -6,10 +6,10 @@ import { useLibraryContext } from '../../../hooks/useLibraryContext';
 import { useSearch } from '../../../contexts/SearchContext'; // Added
 import { A1111FolderType, type DiscoveryCandidate, WebUIVariant } from '../../../services/a1111/types';
 import { useToast } from '../../../hooks/useToast';
-import { ConfirmDialog } from '../../../components/ui/ConfirmDialog';
 import type { ImportResult } from '../../../services/importService';
 import { isImportSourceCancelled, isImportSourceCompleted } from '../../../utils/importSourceStatus';
 import { areDeveloperFeaturesEnabled } from '../../../utils/settingsUtils';
+import { TooltipButton } from '../../../components/ui/InfoTooltip';
 
 interface TabProps {
     settings: AppSettings;
@@ -43,18 +43,6 @@ export const A1111Tab: React.FC<TabProps> = React.memo(({ settings, setSettings,
     const { refreshMetadata } = useSearch(); // Added hook usage
     const { addToast } = useToast();
     const [localTestResult, setLocalTestResult] = useState<{ success: boolean; message: string } | null>(null);
-    const [confirmState, setConfirmState] = useState<{
-        isOpen: boolean;
-        title: string;
-        message: string;
-        confirmLabel?: string;
-        onConfirm: () => void;
-    }>({
-        isOpen: false,
-        title: '',
-        message: '',
-        onConfirm: () => { }
-    });
     const [isDiscovering, setIsDiscovering] = useState(false);
     const [candidates, setCandidates] = useState<DiscoveryCandidate[]>([]);
     const [scanLogs, setScanLogs] = useState<string[]>([]);
@@ -64,14 +52,14 @@ export const A1111Tab: React.FC<TabProps> = React.memo(({ settings, setSettings,
     const developerFeaturesEnabled = areDeveloperFeaturesEnabled(settings);
 
     const handleDiscover = async () => {
-        if (!settings.a1111Path) return;
+        const rootPath = settings.a1111Path!;
         setIsDiscovering(true);
         setLocalTestResult(null);
         setScanLogs([]);
         try {
             const { discoverA1111Candidates, getUnlinkedPriorityCandidatePaths } = await import('../../../services/a1111/config');
             const existing = new Set(settings.monitoredFolders.map(f => f.path.replace(/\\/g, '/').toLowerCase()));
-            const { candidates: results, logs, warnings } = await discoverA1111Candidates(settings.a1111Path, existing, forceVariant);
+            const { candidates: results, logs, warnings } = await discoverA1111Candidates(rootPath, existing, forceVariant);
 
             setCandidates(results);
             setScanLogs(logs);
@@ -111,7 +99,6 @@ export const A1111Tab: React.FC<TabProps> = React.memo(({ settings, setSettings,
 
     const handleLinkSelected = async () => {
         const toLink = candidates.filter(c => selectedPaths.has(c.path));
-        if (toLink.length === 0) return;
         if (!onScanFolder) {
             setLocalTestResult({ success: false, message: "Import service is unavailable." });
             addToast("Import service is unavailable", "error");
@@ -152,8 +139,7 @@ export const A1111Tab: React.FC<TabProps> = React.memo(({ settings, setSettings,
             ];
 
             // 4. Run Unified Import
-            if (foldersToSync.length > 0) {
-                const result = await onScanFolder(foldersToSync);
+            const result = await onScanFolder(foldersToSync);
                 const completedAt = Date.now();
                 const importCancelled = !!result && result.wasCancelled;
                 const importCompleted = !!result && !result.wasCancelled && result.failedPaths.length === 0;
@@ -200,8 +186,8 @@ export const A1111Tab: React.FC<TabProps> = React.memo(({ settings, setSettings,
 
                 let refreshFailed = false;
                 try {
-                    if (refreshCollections) await refreshCollections();
-                    if (refreshMetadata) await refreshMetadata(); // Force full gallery refresh
+                    await refreshCollections();
+                    await refreshMetadata(); // Force full gallery refresh
                 } catch (refreshError) {
                     refreshFailed = true;
                     console.error("Post-import refresh failed", refreshError);
@@ -217,8 +203,6 @@ export const A1111Tab: React.FC<TabProps> = React.memo(({ settings, setSettings,
                     const msg = `Processed ${totalCount} folders with ${result.failedPaths.length} failed file(s). Completed folders were marked scanned; folders with failures were left retryable.`;
                     setLocalTestResult({ success: false, message: msg });
                 }
-            }
-
         } catch (e) {
             console.error("Link/Import failed", e);
             if (newFolderIds.size > 0) {
@@ -264,15 +248,18 @@ export const A1111Tab: React.FC<TabProps> = React.memo(({ settings, setSettings,
                                     <input
                                         type="text"
                                         value={settings.a1111Path || ''}
-                                        onChange={(e) => setSettings(prev => ({ ...prev, a1111Path: e.target.value }))}
+                                        onChange={(e) => {
+                                            const a1111Path = e.target.value;
+                                            setSettings(prev => ({ ...prev, a1111Path }));
+                                        }}
                                         placeholder="e.g. C:\\StableDiffusion or C:\\MyArchive"
                                         className="w-full bg-gray-50 dark:bg-black/20 border border-gray-200 dark:border-white/10 rounded-xl pl-10 pr-4 py-2.5 text-sm focus:border-sage-500 focus:ring-1 focus:ring-sage-500/50 outline-none text-gray-900 dark:text-white font-mono transition-all"
                                     />
                                     <Folder className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 group-focus-within:text-sage-500 transition-colors" />
                                 </div>
-                                <button
-                                    type="button"
-                                    title="Browse"
+                                <TooltipButton
+                                    label="Browse for Stable Diffusion Folder"
+                                    content="Browse for Stable Diffusion Folder"
                                     onClick={async () => {
                                         try {
                                             const { open } = await import('@tauri-apps/plugin-dialog');
@@ -286,7 +273,7 @@ export const A1111Tab: React.FC<TabProps> = React.memo(({ settings, setSettings,
                                     className="aspect-square h-[42px] flex items-center justify-center bg-gray-100 dark:bg-white/10 text-gray-600 dark:text-gray-300 rounded-xl hover:bg-gray-200 dark:hover:bg-white/20 active:scale-95 transition-all"
                                 >
                                     <FolderOpen className="w-5 h-5" />
-                                </button>
+                                </TooltipButton>
                             </div>
                         </div>
 
@@ -384,13 +371,16 @@ export const A1111Tab: React.FC<TabProps> = React.memo(({ settings, setSettings,
                                         <label className="flex items-center gap-3 cursor-pointer group">
                                             <input
                                                 type="checkbox"
-                                                className="hidden"
+                                                role="switch"
+                                                aria-label="Show Non-Standard Folders"
+                                                aria-checked={showAllFolders}
+                                                className="peer sr-only"
                                                 checked={showAllFolders}
                                                 onChange={(e) => setShowAllFolders(e.target.checked)}
                                             />
                                             <span className="text-[10px] font-bold text-gray-500 group-hover:text-sage-600 transition-colors uppercase tracking-tight">Show non-standard folders</span>
                                             <div
-                                                className={`w-8 h-4 rounded-full relative transition-colors ${showAllFolders ? 'bg-sage-500' : 'bg-gray-300 dark:bg-white/10'}`}
+                                                className={`w-8 h-4 rounded-full relative transition-colors peer-focus-visible:outline-none peer-focus-visible:ring-2 peer-focus-visible:ring-sage-500/50 peer-focus-visible:ring-offset-2 peer-focus-visible:ring-offset-white dark:peer-focus-visible:ring-offset-slate-950 ${showAllFolders ? 'bg-sage-500' : 'bg-gray-300 dark:bg-white/10'}`}
                                             >
                                                 <div className={`absolute top-0.5 w-3 h-3 bg-white rounded-full transition-all ${showAllFolders ? 'left-[17px]' : 'left-0.5'}`} />
                                             </div>
@@ -415,14 +405,18 @@ export const A1111Tab: React.FC<TabProps> = React.memo(({ settings, setSettings,
                                             <tr key={c.path} className={`group hover:bg-white/50 dark:hover:bg-white/[0.03] transition-colors ${c.isAlreadyLinked ? 'opacity-40 grayscale' : ''}`}>
                                                 <td className="px-4 py-3">
                                                     <label className="flex items-center justify-center cursor-pointer">
-                                                        <div className={`w-5 h-5 rounded-lg border flex items-center justify-center transition-all relative ${selectedPaths.has(c.path) ? 'bg-sage-600 border-sage-600 shadow-lg shadow-sage-500/30' : 'border-gray-300 dark:border-white/20 bg-white/5'}`}>
+                                                        <input
+                                                            type="checkbox"
+                                                            aria-label={`Select ${c.path}`}
+                                                            className="peer sr-only"
+                                                            checked={selectedPaths.has(c.path)}
+                                                            onChange={() => toggleSelection(c.path)}
+                                                        />
+                                                        <div
+                                                            aria-hidden="true"
+                                                            className={`w-5 h-5 rounded-lg border flex items-center justify-center transition-all relative peer-focus-visible:outline-none peer-focus-visible:ring-2 peer-focus-visible:ring-sage-500/50 peer-focus-visible:ring-offset-2 peer-focus-visible:ring-offset-white dark:peer-focus-visible:ring-offset-slate-950 ${selectedPaths.has(c.path) ? 'bg-sage-600 border-sage-600 shadow-lg shadow-sage-500/30' : 'border-gray-300 dark:border-white/20 bg-white/5'}`}
+                                                        >
                                                             {selectedPaths.has(c.path) && <div className="w-2 h-2 bg-white rounded-sm" />}
-                                                            <input
-                                                                type="checkbox"
-                                                                className="absolute inset-0 opacity-0 w-full h-full cursor-pointer z-10"
-                                                                checked={selectedPaths.has(c.path)}
-                                                                onChange={() => toggleSelection(c.path)}
-                                                            />
                                                         </div>
                                                     </label>
                                                 </td>
@@ -502,17 +496,6 @@ export const A1111Tab: React.FC<TabProps> = React.memo(({ settings, setSettings,
                     )}
                 </div>
             </section >
-
-
-
-            <ConfirmDialog
-                isOpen={confirmState.isOpen}
-                title={confirmState.title}
-                message={confirmState.message}
-                confirmLabel={confirmState.confirmLabel}
-                onConfirm={confirmState.onConfirm}
-                onCancel={() => setConfirmState(prev => ({ ...prev, isOpen: false }))}
-            />
         </div>
     );
 });

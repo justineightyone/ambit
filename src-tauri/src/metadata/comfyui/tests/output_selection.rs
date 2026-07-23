@@ -181,6 +181,42 @@ fn sampler_chain_through_latent_intermediate_resolves_to_one_root() {
 }
 
 #[test]
+fn sampler_chain_through_vae_round_trip_resolves_to_base_root() {
+    let mut nodes = Map::new();
+    add_sampler_branch(&mut nodes, "2", "base-model");
+    add_sampler_branch(&mut nodes, "10", "refiner-model");
+    nodes.insert(
+        "30".to_string(),
+        json!({
+            "class_type": "VAEDecode",
+            "inputs": { "samples": ["2", 0] }
+        }),
+    );
+    nodes.insert(
+        "40".to_string(),
+        json!({
+            "class_type": "VAEEncode",
+            "inputs": { "pixels": ["30", 0] }
+        }),
+    );
+    nodes
+        .get_mut("10")
+        .expect("refiner sampler")
+        .get_mut("inputs")
+        .expect("sampler inputs")["latent_image"] = json!(["40", 0]);
+    add_output(&mut nodes, "20", "SaveImage", Some("10"), None);
+
+    let (meta, diagnostics) = extract_comfyui_metadata_with_diagnostics(&chunks(nodes, None));
+
+    assert_eq!(meta.model, "base_model");
+    assert_eq!(meta.seed, Some(200));
+    assert_eq!(diagnostics.selected_output_candidate_count, 1);
+    assert_eq!(diagnostics.unique_output_root_sampler_count, 1);
+    assert!(!diagnostics.output_ambiguous);
+    assert_sampler_source(&diagnostics, ComfyParseLayer::SamplerTraversal);
+}
+
+#[test]
 fn sampler_auxiliary_image_does_not_become_latent_ancestry() {
     let mut nodes = Map::new();
     add_sampler_branch(&mut nodes, "2", "reference-model");
@@ -212,6 +248,46 @@ fn sampler_auxiliary_image_does_not_become_latent_ancestry() {
 
     assert_eq!(meta.model, "primary_model");
     assert_eq!(meta.seed, Some(1_000));
+    assert_eq!(diagnostics.unique_output_root_sampler_count, 1);
+    assert!(!diagnostics.output_ambiguous);
+    assert_sampler_source(&diagnostics, ComfyParseLayer::SamplerTraversal);
+}
+
+#[test]
+fn sampler_behind_image_conditioning_does_not_become_latent_ancestry() {
+    let mut nodes = Map::new();
+    add_sampler_branch(&mut nodes, "2", "reference-model");
+    add_sampler_branch(&mut nodes, "10", "primary-model");
+    nodes.insert(
+        "30".to_string(),
+        json!({
+            "class_type": "VAEDecode",
+            "inputs": { "samples": ["2", 0] }
+        }),
+    );
+    nodes.insert(
+        "40".to_string(),
+        json!({
+            "class_type": "InstructPixToPixConditioning",
+            "inputs": {
+                "positive": ["1002", 0],
+                "negative": ["1003", 0],
+                "pixels": ["30", 0]
+            }
+        }),
+    );
+    nodes
+        .get_mut("10")
+        .expect("primary sampler")
+        .get_mut("inputs")
+        .expect("sampler inputs")["latent_image"] = json!(["40", 2]);
+    add_output(&mut nodes, "20", "SaveImage", Some("10"), None);
+
+    let (meta, diagnostics) = extract_comfyui_metadata_with_diagnostics(&chunks(nodes, None));
+
+    assert_eq!(meta.model, "primary_model");
+    assert_eq!(meta.seed, Some(1_000));
+    assert_eq!(diagnostics.selected_output_candidate_count, 1);
     assert_eq!(diagnostics.unique_output_root_sampler_count, 1);
     assert!(!diagnostics.output_ambiguous);
     assert_sampler_source(&diagnostics, ComfyParseLayer::SamplerTraversal);
@@ -434,5 +510,88 @@ fn custom_spaced_save_uses_ui_image_and_latent_input_types() {
     assert_eq!(meta.steps, 12);
     assert_eq!(diagnostics.selected_output_candidate_count, 1);
     assert_eq!(diagnostics.unique_output_root_sampler_count, 1);
+    assert_sampler_source(&diagnostics, ComfyParseLayer::SamplerTraversal);
+}
+
+#[test]
+fn selected_sampler_custom_output_reroute_uses_samples_alias() {
+    // Output reroutes retain image-like aliases so the saved-output path, rather
+    // than disconnected sampler fallback, selects SamplerCustom authoritatively.
+    let nodes = serde_json::from_value(json!({
+        "1": {
+            "class_type": "CheckpointLoaderSimple",
+            "inputs": { "ckpt_name": "custom-model.safetensors" }
+        },
+        "2": {
+            "class_type": "SamplerCustom",
+            "inputs": { "model": ["1", 0], "noise_seed": 42, "cfg": 5.5 }
+        },
+        "3": {
+            "class_type": "Reroute",
+            "inputs": { "samples": ["2", 0] }
+        },
+        "4": {
+            "class_type": "SaveImage",
+            "inputs": { "images": ["3", 0] }
+        }
+    }))
+    .expect("test prompt graph should be an object");
+
+    let (meta, diagnostics) = extract_comfyui_metadata_with_diagnostics(&chunks(nodes, None));
+
+    assert_eq!(meta.model, "custom_model");
+    assert_eq!(meta.seed, Some(42));
+    assert_eq!(meta.cfg, 5.5);
+    assert!(diagnostics.authoritative_sampler_custom_path);
+    for field in [
+        ComfyMetadataField::Model,
+        ComfyMetadataField::Seed,
+        ComfyMetadataField::Cfg,
+    ] {
+        assert_eq!(
+            diagnostics.field_sources.get(&field),
+            Some(&ComfyParseLayer::SamplerTraversal)
+        );
+    }
+    for field in [ComfyMetadataField::Steps, ComfyMetadataField::Sampler] {
+        assert!(!diagnostics.field_sources.contains_key(&field));
+    }
+}
+
+#[test]
+fn ordinary_ksampler_output_reroute_uses_typed_ui_alias() {
+    // A custom reroute socket name remains traversable when its UI type declares
+    // image/latent flow, preserving ordinary KSampler saved-output authority.
+    let workflow = json!({
+        "nodes": [
+            { "id": 1, "type": "CheckpointLoaderSimple", "widgets_values": ["ui-reroute-model.safetensors"] },
+            {
+                "id": 2,
+                "type": "KSampler",
+                "inputs": [{"name":"model","type":"MODEL","link":1}],
+                "widgets_values": [42,"fixed",20,5.5,"euler","simple",1.0]
+            },
+            {
+                "id": 3,
+                "type": "Reroute",
+                "inputs": [{"name":"render","type":"LATENT","link":2}]
+            },
+            {
+                "id": 4,
+                "type": "SaveImage",
+                "inputs": [{"name":"images","type":"IMAGE","link":3}]
+            }
+        ],
+        "links": [
+            [1,1,0,2,0,"MODEL"], [2,2,0,3,0,"LATENT"],
+            [3,3,0,4,0,"IMAGE"]
+        ]
+    });
+    let chunks = HashMap::from([("workflow".to_string(), workflow.to_string())]);
+
+    let (meta, diagnostics) = extract_comfyui_metadata_with_diagnostics(&chunks);
+
+    assert_eq!(meta.model, "ui_reroute_model");
+    assert_eq!(meta.seed, Some(42));
     assert_sampler_source(&diagnostics, ComfyParseLayer::SamplerTraversal);
 }

@@ -9,6 +9,8 @@ import { CollectionContextMenu } from '../../collections/components/CollectionCo
 import { CollectionItem } from './CollectionItem';
 import { useSettings } from '../../../contexts/SettingsContext';
 import { useCollectionStore } from '../../../stores/collectionStore';
+import { TooltipButton } from '../../../components/ui/InfoTooltip';
+import { compareCollectionsByCount } from '../../../utils/collectionCount';
 
 interface CollectionListProps<T extends Collection> {
     collections: T[];
@@ -82,9 +84,8 @@ export function CollectionList<T extends Collection>({
         }));
     };
     const handleSortSelect = (id: string) => {
-        if (isCollectionSort(id)) setSort(id);
+        setSort(id as CollectionSortOption);
     };
-    const [showSortMenu, setShowSortMenu] = useState(false);
     const [dropTargetId, setDropTargetId] = useState<string | null>(null);
 
     const viewMode = settings.resourceViewModes?.['collections'] || 'list';
@@ -108,7 +109,11 @@ export function CollectionList<T extends Collection>({
         const selectedSmartCollection = collections.find(collection =>
             collection.id === filters.collectionId && !!collection.filters
         );
-        if (!selectedSmartCollection || lastSelectedSmartRefresh.current === selectedSmartCollection.id) return;
+        if (!selectedSmartCollection) {
+            lastSelectedSmartRefresh.current = null;
+            return;
+        }
+        if (lastSelectedSmartRefresh.current === selectedSmartCollection.id) return;
 
         lastSelectedSmartRefresh.current = selectedSmartCollection.id;
         void refreshSmartCounts({
@@ -192,8 +197,8 @@ export function CollectionList<T extends Collection>({
             switch (sort) {
                 case 'name_asc': return a.name.localeCompare(b.name);
                 case 'name_desc': return b.name.localeCompare(a.name);
-                case 'count_asc': return (a.count ?? a.imageIds.length) - (b.count ?? b.imageIds.length);
-                case 'count_desc': return (b.count ?? b.imageIds.length) - (a.count ?? a.imageIds.length);
+                case 'count_asc': return compareCollectionsByCount(a, b, 'asc');
+                case 'count_desc': return compareCollectionsByCount(a, b, 'desc');
                 case 'date_asc': return a.createdAt - b.createdAt;
                 case 'date_desc': return b.createdAt - a.createdAt;
                 case 'recent_asc': return (a.updatedAt || a.createdAt) - (b.updatedAt || b.createdAt);
@@ -229,27 +234,33 @@ export function CollectionList<T extends Collection>({
                     align="left"
                     triggerClassName={(isOpen) => `transition-colors p-1.5 rounded-lg border ${isOpen ? 'text-sage-600 dark:text-sage-400 bg-sage-50 dark:bg-sage-900/40 border-sage-200 dark:border-sage-500/30' : 'text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 bg-gray-50 dark:bg-white/5 border-gray-200 dark:border-white/5'}`}
                 />
-                <button
+                <TooltipButton
+                    label={viewMode === 'list' ? 'Switch to Grid View' : 'Switch to List View'}
+                    content={viewMode === 'list' ? 'Switch to Grid View' : 'Switch to List View'}
+                    aria-pressed={viewMode === 'grid'}
                     onClick={toggleViewMode}
                     className={`transition-colors p-1.5 rounded-lg border ${viewMode === 'grid' ? 'text-sage-600 dark:text-sage-400 bg-sage-50 dark:bg-sage-900/40 border-sage-200 dark:border-sage-500/30' : 'text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 bg-gray-50 dark:bg-white/5 border-gray-200 dark:border-white/5'}`}
-                    title={viewMode === 'list' ? "Switch to Grid View" : "Switch to List View"}
                 >
                     {viewMode === 'list' ? <LayoutGrid className="w-3.5 h-3.5" /> : <ListIcon className="w-3.5 h-3.5" />}
-                </button>
-                <button
-                    onClick={(e) => { e.stopPropagation(); setShowArchived(!showArchived); }}
+                </TooltipButton>
+                <TooltipButton
+                    label={showArchived ? 'Hide Archived' : 'Include Archived'}
+                    content={showArchived ? 'Hide Archived' : 'Include Archived'}
+                    aria-pressed={showArchived}
+                    onClick={() => setShowArchived(!showArchived)}
                     className={`transition-colors p-1.5 rounded-lg border ${showArchived ? 'text-sage-600 dark:text-sage-400 bg-sage-50 dark:bg-sage-900/40 border-sage-200 dark:border-sage-500/30' : 'text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 bg-gray-50 dark:bg-white/5 border-gray-200 dark:border-white/5'}`}
-                    title={showArchived ? "Hide Archived" : "Include Archived"}
                 >
                     <Archive className="w-3.5 h-3.5" />
-                </button>
-                <button
-                    onClick={(e) => { e.stopPropagation(); setIsSearchOpen(!isSearchOpen); if (isSearchOpen) setSearchQuery(''); }}
+                </TooltipButton>
+                <TooltipButton
+                    label="Search Collections"
+                    content="Search Collections"
+                    aria-expanded={isSearchOpen}
+                    onClick={() => { setIsSearchOpen(!isSearchOpen); if (isSearchOpen) setSearchQuery(''); }}
                     className={`transition-colors p-1.5 rounded-lg border ${isSearchOpen ? 'text-sage-600 dark:text-sage-400 bg-sage-50 dark:bg-sage-900/40 border-sage-200 dark:border-sage-500/30' : 'text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 bg-gray-50 dark:bg-white/5 border-gray-200 dark:border-white/5'}`}
-                    title="Search Collections"
                 >
                     <Search className="w-3.5 h-3.5" />
-                </button>
+                </TooltipButton>
                 {renderToolbarExtras?.()}
             </div>
             {isSearchOpen && (

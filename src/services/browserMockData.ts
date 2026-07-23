@@ -2,7 +2,7 @@ import { AIImage, AppSettings, Collection, FacetType, FilterState, GeneratorTool
 import type { AppState, IRepository } from './repository';
 import type { Facets, LibraryStats, LibraryStatsSummary, ValidFacetNames } from './db/searchRepo';
 import { getDateFilterBounds, getSearchDateBounds, timestampMatchesDateBounds } from '../utils/dateFilters';
-import { createDefaultAppSettings } from '../constants/defaultSettings';
+import { createDefaultAppSettings, inferPromptMaskingEnabled } from '../constants/defaultSettings';
 
 const STORAGE_KEY = 'ambit_browser_mock_state_v1';
 const MOCK_COUNT = 180;
@@ -179,12 +179,17 @@ const loadStoredState = (): AppState => {
         const saved = localStorage.getItem(STORAGE_KEY);
         if (!saved) return state;
         const parsed = JSON.parse(saved) as Partial<AppState>;
+        const savedSettings = parsed.settings ?? {};
 
         state = {
             ...state,
             ...parsed,
             images: state.images,
-            settings: { ...DEFAULT_SETTINGS, ...parsed.settings },
+            settings: {
+                ...DEFAULT_SETTINGS,
+                ...savedSettings,
+                promptMaskingEnabled: inferPromptMaskingEnabled(savedSettings),
+            },
             collections: parsed.collections?.length ? parsed.collections : state.collections,
             smartCollections: parsed.smartCollections ?? [],
             recentSearches: parsed.recentSearches ?? state.recentSearches,
@@ -208,6 +213,7 @@ const persistState = (): void => {
         }));
     } catch (error) {
         console.error('[BrowserMock] Failed to persist mock state', error);
+        throw error;
     }
 };
 
@@ -225,6 +231,29 @@ export class BrowserMockRepository implements IRepository {
         };
         persistState();
     }
+
+    async update(updater: (currentState: AppState) => AppState): Promise<AppState> {
+        const nextState = updater(loadStoredState());
+        state = {
+            ...state,
+            ...nextState,
+            images: state.images,
+            settings: { ...DEFAULT_SETTINGS, ...nextState.settings },
+        };
+        persistState();
+        return state;
+    }
+
+    async schedulePurge(updater: (currentState: AppState) => AppState) {
+        const transactionId = crypto.randomUUID();
+        const nextState = await this.update(updater);
+        return {
+            transactionId,
+            state: nextState,
+            message: 'Browser mock library cleared for this session.'
+        };
+    }
+
 }
 
 export const getBrowserMockImages = (): AIImage[] => loadStoredState().images;
@@ -549,6 +578,9 @@ export const getBrowserMockFacets = (filters?: FilterState): Facets => {
 export const getBrowserMockStatsSummary = (filters: FilterState): LibraryStatsSummary => {
     const current = loadStoredState();
     const images = filterImages(current.images, filters, getBrowserMockCollections());
+    const recordedSteps = images
+        .map((image) => image.metadata.steps)
+        .filter((steps) => steps > 0);
     const modelCounts = new Map<string, number>();
 
     images.forEach((image) => {
@@ -558,8 +590,8 @@ export const getBrowserMockStatsSummary = (filters: FilterState): LibraryStatsSu
     return {
         totalImages: images.length,
         totalGenerations: images.length,
-        avgSteps: images.length
-            ? Math.round(images.reduce((sum, image) => sum + image.metadata.steps, 0) / images.length)
+        avgSteps: recordedSteps.length
+            ? Math.round(recordedSteps.reduce((sum, steps) => sum + steps, 0) / recordedSteps.length)
             : 0,
         estSizeMB: (images.reduce((sum, image) => sum + (image.fileSize ?? 0), 0) / 1_000_000).toFixed(1),
         modelStats: Array.from(modelCounts.entries())

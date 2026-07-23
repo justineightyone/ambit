@@ -8,6 +8,7 @@ import { SectionHeader, SearchInput, SortDropdown } from './FilterPrimitives';
 import { formatCountCompact, formatModelName } from '../../../utils/formatUtils';
 import { useQueryClient } from '@tanstack/react-query';
 import { PrivacyAwareThumbnail } from '../../../components/ui/PrivacyAwareThumbnail';
+import { TooltipButton } from '../../../components/ui/InfoTooltip';
 import { commands } from '../../../bindings';
 import { uniqueAssetAliases } from '../../../utils/assetIdentity';
 import type { ResourceThumbnailSource } from '../../../services/db/searchRepo';
@@ -128,7 +129,7 @@ export const ResourceSection: React.FC<ResourceSectionProps> = ({
     }, [type, setSettings]);
 
     const handleSortSelect = useCallback((id: string) => {
-        if (isFacetSortOption(id)) setSortOption(id);
+        setSortOption(id as FacetSortOption);
     }, [setSortOption]);
 
     // Map UI type to FilterState key (checkpoints uses 'models' in FilterState for historical reasons)
@@ -171,7 +172,7 @@ export const ResourceSection: React.FC<ResourceSectionProps> = ({
             aliasGroup[item.name] = itemAliases;
             return {
                 ...prev,
-                [filterKey]: currentList.includes(item.name) ? currentList : [...currentList, item.name],
+                [filterKey]: [...currentList, item.name],
                 assetFilterAliases: nextAliasGroups
             };
         });
@@ -185,7 +186,7 @@ export const ResourceSection: React.FC<ResourceSectionProps> = ({
         return item.createdAt ?? item.localModifiedAt ?? 0;
     }, [assetScope]);
 
-    const filteredItems = useMemo(() => (data || [])
+    const filteredItems = useMemo(() => data
         .filter(item => {
             const aliases = getItemAliases(item);
             const query = searchQuery.toLowerCase();
@@ -215,7 +216,6 @@ export const ResourceSection: React.FC<ResourceSectionProps> = ({
                 case 'recent_asc': return compareWithNameTieBreak((a.lastUsedAt || 0) - (b.lastUsedAt || 0), a, b);
                 case 'added_desc': return compareWithNameTieBreak(getAddedSortValue(b) - getAddedSortValue(a), a, b);
                 case 'added_asc': return compareWithNameTieBreak(getAddedSortValue(a) - getAddedSortValue(b), a, b);
-                default: return compareWithNameTieBreak(b.count - a.count, a, b);
             }
         }), [assetScope, data, getAddedSortValue, getItemAliases, searchQuery, selectedNames, sortOption, validNameSet]);
 
@@ -256,7 +256,7 @@ export const ResourceSection: React.FC<ResourceSectionProps> = ({
 
     const getFallbackHash = useCallback((item: ResourceItem) => {
         if (item.hash) return item.hash;
-        switch (type as string) {
+        switch (type) {
             case 'checkpoints':
                 return `name:${item.name}`;
             case 'loras':
@@ -269,8 +269,6 @@ export const ResourceSection: React.FC<ResourceSectionProps> = ({
                 return `cnet_${item.name}`;
             case 'ipAdapters':
                 return `ipad_${item.name}`;
-            default:
-                return item.name;
         }
     }, [type]);
 
@@ -292,8 +290,6 @@ export const ResourceSection: React.FC<ResourceSectionProps> = ({
 
     // "Use Sidecar / Reset" - clears user override, falls back to sidecar > dynamic
     const handleResetToSidecar = async (item: ResourceItem) => {
-        if (!item.hash && !item.name) return;
-
         try {
             const result = await commands.unsetModelThumbnail(getFallbackHash(item), item.name, getBackendResourceType());
             if (result.status === 'error') throw new Error(result.error);
@@ -306,8 +302,6 @@ export const ResourceSection: React.FC<ResourceSectionProps> = ({
 
     // "Use Dynamic" - clears BOTH override and sidecar, forces dynamic selection
     const handleUseDynamic = async (item: ResourceItem) => {
-        if (!item.hash && !item.name) return;
-
         try {
             const result = await commands.clearAllThumbnails(getFallbackHash(item), item.name, getBackendResourceType());
             if (result.status === 'error') throw new Error(result.error);
@@ -319,8 +313,6 @@ export const ResourceSection: React.FC<ResourceSectionProps> = ({
     };
 
     const handleThumbnailSensitivity = async (item: ResourceItem, sensitivity: boolean | null) => {
-        if (!item.hash && !item.name) return;
-
         try {
             const result = await commands.setResourceThumbnailSensitivity(getFallbackHash(item), item.name, sensitivity, getBackendResourceType());
             if (result.status === 'error') throw new Error(result.error);
@@ -520,17 +512,23 @@ export const ResourceSection: React.FC<ResourceSectionProps> = ({
                             align="left"
                             triggerClassName={(isOpen) => `transition-colors p-1.5 rounded-lg border ${isOpen ? 'text-sage-600 dark:text-sage-400 bg-sage-50 dark:bg-sage-900/40 border-sage-200 dark:border-sage-500/30' : 'text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 bg-gray-50 dark:bg-white/5 border-gray-200 dark:border-white/5'}`}
                         />
-                        <button
+                        <TooltipButton
+                            label={viewMode === 'list' ? 'Switch to Grid View' : 'Switch to List View'}
+                            content={viewMode === 'list' ? 'Switch to Grid View' : 'Switch to List View'}
+                            aria-pressed={viewMode === 'grid'}
                             onClick={toggleViewMode}
                             className={`transition-colors p-1.5 rounded-lg border ${viewMode === 'grid' ? 'text-sage-600 dark:text-sage-400 bg-sage-50 dark:bg-sage-900/40 border-sage-200 dark:border-sage-500/30' : 'text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 bg-gray-50 dark:bg-white/5 border-gray-200 dark:border-white/5'}`}
-                            title={viewMode === 'list' ? "Switch to Grid View" : "Switch to List View"}
                         >
                             {viewMode === 'list' ? <LayoutGrid className="w-3.5 h-3.5" /> : <ListIcon className="w-3.5 h-3.5" />}
-                        </button>
+                        </TooltipButton>
                         {supportsMatchMode && (
-                            <button
-                                onClick={(e) => {
-                                    e.stopPropagation();
+                            <TooltipButton
+                                label={`${title} match mode: ${isAllMode ? 'Match All' : 'Match Any'}. Activate to use ${isAllMode ? 'Match Any' : 'Match All'}.`}
+                                content={isAllMode
+                                    ? 'Match All: Show images containing every selected item.'
+                                    : 'Match Any: Show images containing at least one selected item.'}
+                                aria-pressed={isAllMode}
+                                onClick={() => {
                                     const nextMode = isAllMode ? 'any' : 'all';
                                     setFilters(prev => ({
                                         ...prev,
@@ -543,20 +541,19 @@ export const ResourceSection: React.FC<ResourceSectionProps> = ({
                                 className={`transition-colors p-1.5 rounded-lg border ${isAllMode
                                     ? 'text-sage-600 dark:text-sage-400 bg-sage-50 dark:bg-sage-900/40 border-sage-200 dark:border-sage-500/30'
                                     : 'text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 bg-gray-50 dark:bg-white/5 border-gray-200 dark:border-white/5'}`}
-                                title={isAllMode
-                                    ? "Match All: Show images that have EVERY selected item"
-                                    : "Match Any: Show images with AT LEAST ONE selected item"}
                             >
                                 {isAllMode ? <CircleDot className="w-3.5 h-3.5" /> : <Circle className="w-3.5 h-3.5" />}
-                            </button>
+                            </TooltipButton>
                         )}
-                        <button
-                            onClick={(e) => { e.stopPropagation(); setIsSearchOpen(!isSearchOpen); if (isSearchOpen) setSearchQuery(''); }}
+                        <TooltipButton
+                            label={`Search ${singularType}s`}
+                            content={`Search ${singularType}s`}
+                            aria-expanded={isSearchOpen}
+                            onClick={() => { setIsSearchOpen(!isSearchOpen); if (isSearchOpen) setSearchQuery(''); }}
                             className={`transition-colors p-1.5 rounded-lg border ${isSearchOpen ? 'text-sage-600 dark:text-sage-400 bg-sage-50 dark:bg-sage-900/40 border-sage-200 dark:border-sage-500/30' : 'text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 bg-gray-50 dark:bg-white/5 border-gray-200 dark:border-white/5'}`}
-                            title={`Search ${singularType}s`}
                         >
                             <Search className="w-3.5 h-3.5" />
-                        </button>
+                        </TooltipButton>
                     </div>
 
                     {isSearchOpen && (

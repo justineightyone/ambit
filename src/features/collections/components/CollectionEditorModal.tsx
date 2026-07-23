@@ -54,9 +54,9 @@ export const CollectionEditorModal: React.FC<CollectionEditorModalProps> = ({
     };
 
     const removeFilter = (key: keyof FilterState, value: unknown) => {
-        if (!draftFilters) return;
-
         setDraftFilters(prev => {
+            // Defend against an event queued while switching collections.
+            /* istanbul ignore next */
             if (!prev) return null;
             const next = { ...prev };
 
@@ -70,10 +70,10 @@ export const CollectionEditorModal: React.FC<CollectionEditorModalProps> = ({
                 next.favoritesOnly = false;
             } else if (key === 'searchQuery') {
                 next.searchQuery = '';
-            } else if (key === 'minSteps' || key === 'maxSteps') {
+            } else if (key === 'minSteps') {
                 next.minSteps = undefined;
                 next.maxSteps = undefined;
-            } else if (key === 'minCfg' || key === 'maxCfg') {
+            } else {
                 next.minCfg = undefined;
                 next.maxCfg = undefined;
             }
@@ -93,7 +93,7 @@ export const CollectionEditorModal: React.FC<CollectionEditorModalProps> = ({
                 <div key="query" className="flex items-center gap-1 px-2 py-1 rounded-md bg-gray-100 dark:bg-zinc-800 text-gray-700 dark:text-gray-300 text-xs border border-gray-200 dark:border-white/10">
                     <span className="font-semibold text-gray-500">Query:</span>
                     <span className="truncate max-w-[150px]">"{draftFilters.searchQuery}"</span>
-                    <button onClick={() => removeFilter('searchQuery', null)} className="hover:text-red-500"><X className="w-3 h-3" /></button>
+                    <button type="button" aria-label="Remove Search Query Rule" onClick={() => removeFilter('searchQuery', null)} className="hover:text-red-500"><X className="w-3 h-3" /></button>
                 </div>
             );
         }
@@ -103,7 +103,7 @@ export const CollectionEditorModal: React.FC<CollectionEditorModalProps> = ({
             chips.push(
                 <div key="date" className="flex items-center gap-1 px-2 py-1 rounded-md bg-sage-100 dark:bg-sage-500/20 text-sage-700 dark:text-sage-200 text-xs border border-sage-200">
                     <span>{dateFilterLabel}</span>
-                    <button onClick={() => removeFilter('dateRange', null)} className="hover:text-red-500"><X className="w-3 h-3" /></button>
+                    <button type="button" aria-label="Remove Date Rule" onClick={() => removeFilter('dateRange', null)} className="hover:text-red-500"><X className="w-3 h-3" /></button>
                 </div>
             );
         }
@@ -114,7 +114,7 @@ export const CollectionEditorModal: React.FC<CollectionEditorModalProps> = ({
                 <div key="fav" className="flex items-center gap-1 px-2 py-1 rounded-md bg-red-100 text-red-700 text-xs border border-red-200">
                     <div className="w-3 h-3 text-red-500">❤️</div>
                     <span>Favorites</span>
-                    <button onClick={() => removeFilter('favoritesOnly', null)} className="hover:text-red-700"><X className="w-3 h-3" /></button>
+                    <button type="button" aria-label="Remove Favorites Rule" onClick={() => removeFilter('favoritesOnly', null)} className="hover:text-red-700"><X className="w-3 h-3" /></button>
                 </div>
             );
         }
@@ -124,7 +124,7 @@ export const CollectionEditorModal: React.FC<CollectionEditorModalProps> = ({
             chips.push(
                 <div key="steps" className="flex items-center gap-1 px-2 py-1 rounded-md bg-orange-100 dark:bg-orange-500/20 text-orange-700 dark:text-orange-200 text-xs border border-orange-200 dark:border-orange-500/30">
                     <span>Steps: {draftFilters.minSteps ?? 0}-{draftFilters.maxSteps ?? '∞'}</span>
-                    <button onClick={() => removeFilter('minSteps', null)} className="hover:opacity-70"><X className="w-3 h-3" /></button>
+                    <button type="button" aria-label="Remove Steps Rule" onClick={() => removeFilter('minSteps', null)} className="hover:opacity-70"><X className="w-3 h-3" /></button>
                 </div>
             );
         }
@@ -133,7 +133,7 @@ export const CollectionEditorModal: React.FC<CollectionEditorModalProps> = ({
             chips.push(
                 <div key="cfg" className="flex items-center gap-1 px-2 py-1 rounded-md bg-yellow-100 dark:bg-yellow-500/20 text-yellow-700 dark:text-yellow-200 text-xs border border-yellow-200 dark:border-yellow-500/30">
                     <span>CFG: {draftFilters.minCfg ?? 0}-{draftFilters.maxCfg ?? '∞'}</span>
-                    <button onClick={() => removeFilter('minCfg', null)} className="hover:opacity-70"><X className="w-3 h-3" /></button>
+                    <button type="button" aria-label="Remove CFG Rule" onClick={() => removeFilter('minCfg', null)} className="hover:opacity-70"><X className="w-3 h-3" /></button>
                 </div>
             );
         }
@@ -178,14 +178,12 @@ export const CollectionEditorModal: React.FC<CollectionEditorModalProps> = ({
                         case 'cyan':
                             className += "bg-cyan-100 dark:bg-cyan-500/20 text-cyan-700 dark:text-cyan-200 border-cyan-200 dark:border-cyan-500/30";
                             break;
-                        default:
-                            className += "bg-gray-100 dark:bg-zinc-800 text-gray-700 dark:text-gray-300 border-gray-200 dark:border-white/10";
                     }
 
                     chips.push(
                         <div key={`${key}-${val}`} className={className}>
                             <span className="truncate max-w-[120px]">{val}</span>
-                            <button onClick={() => removeFilter(key as keyof FilterState, val)} className="hover:opacity-70"><X className="w-3 h-3" /></button>
+                            <button type="button" aria-label={`Remove ${val} Rule`} onClick={() => removeFilter(key as keyof FilterState, val)} className="hover:opacity-70"><X className="w-3 h-3" /></button>
                         </div>
                     );
                 });
@@ -227,6 +225,8 @@ export const CollectionEditorModal: React.FC<CollectionEditorModalProps> = ({
                                 Edit Collection: {collection.name}
                             </h3>
                             <button
+                                type="button"
+                                aria-label="Close Collection Editor"
                                 onClick={onClose}
                                 className="p-2 -mr-2 text-gray-400 hover:text-gray-900 dark:hover:text-white rounded-full hover:bg-black/5 dark:hover:bg-white/10 transition-colors"
                             >

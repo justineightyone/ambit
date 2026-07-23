@@ -21,15 +21,22 @@ On first launch, Ambit shows an onboarding wizard. The wizard introduces:
 - local-first privacy behavior
 - content masking for prompts containing configured keywords
 
-You can skip optional integrations and Gemini setup during onboarding and configure them later from Settings. If you enable Gemini during onboarding, verify the API key before continuing. After setup, Ambit opens the Add Images flow so you can connect a generator, add a folder, or select individual files.
+You can skip optional integrations and Gemini setup during onboarding and configure them later from Settings. If you enable Gemini during onboarding, verify the API key before continuing. After setup, you can reopen the guide from **Help & Guide > Setup Guide** without resetting your existing preferences. Close or press Escape to discard unsaved guide changes; verified API keys and changes made directly in linked Settings pages are saved when you make them.
+
+After setup, Ambit opens the library. Existing images appear immediately. If an import is still running, the empty library shows its current progress until the first images arrive. If the library is empty and idle, use **Import Images** to connect a generator, add a folder, or select individual files.
 
 ```mermaid
 flowchart TD
     A["Install Ambit"] --> B["Launch app"]
     B --> C["Complete onboarding"]
-    C --> D["Choose how to add images"]
-    D --> E["Scan and catalog images"]
-    E --> F["Browse, search, and inspect metadata"]
+    C --> D["Open library"]
+    D --> E{"Library state"}
+    E -->|Images available| F["Browse, search, and inspect metadata"]
+    E -->|Import running| G["Show import progress"]
+    G --> F
+    E -->|Empty and idle| H["Choose how to add images"]
+    H --> I["Scan and catalog images"]
+    I --> F
 ```
 
 ## Main Areas
@@ -42,7 +49,7 @@ The main Ambit workspace has a left sidebar, a library area, and an optional fil
 - Maintenance helps resolve missing files, duplicates, removed items, and other cleanup tasks.
 - Filters opens the library filter panel.
 - Settings opens preferences and integrations.
-- Help opens keyboard shortcuts and search syntax.
+- Help opens keyboard shortcuts, search syntax, and the reusable setup guide.
 
 ## What Ambit Stores
 

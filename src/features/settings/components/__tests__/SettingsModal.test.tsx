@@ -65,6 +65,7 @@ const createSettings = (): AppSettings => ({
     confirmDelete: true,
     defaultTheaterMode: false,
     monitoredFolders: [],
+    promptMaskingEnabled: true,
     maskedKeywords: [],
     maskingMode: 'blur',
     enableAI: false
@@ -229,6 +230,32 @@ describe('SettingsModal', () => {
 
         expect(document.activeElement).toBe(launcher);
         launcher.remove();
+    });
+
+    it('does not attempt to restore focus to a non-HTML element', () => {
+        const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+        svg.setAttribute('tabindex', '0');
+        document.body.append(svg);
+        svg.focus();
+        const modalProps = {
+            onClose: vi.fn(),
+            settings: createSettings(),
+            onSave: vi.fn(),
+            canCheckForUpdates: false,
+            hasPendingUpdate: false,
+            pendingUpdateVersion: null,
+            updateErrorMessage: null,
+            updateStatus: 'idle' as const,
+            onCheckForUpdates: vi.fn(),
+            onOpenUpdatePrompt: vi.fn(),
+            onNavigateToMaintenance: vi.fn(),
+        };
+        const { rerender } = render(<SettingsModal isOpen={true} {...modalProps} />);
+
+        rerender(<SettingsModal isOpen={false} {...modalProps} />);
+
+        expect(document.activeElement).not.toBe(svg);
+        svg.remove();
     });
 
     it('loads the Dev Tools panel only after selecting it in dev builds', async () => {

@@ -1,6 +1,6 @@
 use super::graph::{
-    compare_node_ids, get_node_input_link, get_node_input_links, get_node_type, get_source_id,
-    ComfyGraph,
+    compare_node_ids, get_input_connection, get_node_input_link, get_node_input_links,
+    get_node_type, get_source_id, ComfyGraph, InputConnection,
 };
 use crate::metadata::ImageMetadata;
 use serde_json::Value;
@@ -21,6 +21,11 @@ pub(crate) struct OutputTraversalDiagnostics {
     pub(crate) selected_output_candidate_count: usize,
     pub(crate) unique_root_sampler_count: usize,
     pub(crate) ambiguous: bool,
+    pub(crate) authoritative_sampler_custom_path: bool,
+    pub(crate) authoritative_model: bool,
+    pub(crate) authoritative_cfg: bool,
+    pub(crate) authoritative_positive_prompt: bool,
+    pub(crate) authoritative_negative_prompt: bool,
 }
 
 pub struct ComfyEvaluator<'a> {
@@ -70,6 +75,33 @@ impl<'a> ComfyEvaluator<'a> {
         let Some(root_node) = self.graph.get_node(root_sampler_id) else {
             return (ImageMetadata::default(), diagnostics);
         };
+
+        diagnostics.authoritative_sampler_custom_path = get_node_type(root_node) == "SamplerCustom";
+        diagnostics.authoritative_positive_prompt =
+            get_node_input_link(root_node, "positive").is_some();
+        diagnostics.authoritative_negative_prompt =
+            get_node_input_link(root_node, "negative").is_some();
+
+        if let Some(guider_id) = get_source_id(self.graph, root_sampler_id, "guider") {
+            if let Some(guider_node) = self.graph.get_node(&guider_id) {
+                if let Some((_, positive_input, negative_input)) =
+                    super::eval_core::cfg_guider_params(guider_node)
+                {
+                    if super::eval_core::cfg_guider_requires_strict_inputs(guider_node) {
+                        diagnostics.authoritative_model = true;
+                        diagnostics.authoritative_cfg = true;
+                    }
+                    diagnostics.authoritative_positive_prompt =
+                        get_node_input_link(guider_node, positive_input).is_some();
+                    diagnostics.authoritative_negative_prompt =
+                        get_node_input_link(guider_node, negative_input).is_some();
+                } else if get_node_type(guider_node) == "BasicGuider"
+                    && get_node_input_link(guider_node, "conditioning").is_some()
+                {
+                    diagnostics.authoritative_positive_prompt = true;
+                }
+            }
+        }
 
         let mut loras = Vec::new();
         let mut ip_adapters = Vec::new();
@@ -192,6 +224,39 @@ impl<'a> ComfyEvaluator<'a> {
         }
     }
 
+    fn find_upstream_latent_samplers(
+        &self,
+        start_id: &str,
+        visited: &mut HashSet<String>,
+        depth: u32,
+        sampler_ids: &mut Vec<String>,
+    ) {
+        if depth > 50 || !visited.insert(start_id.to_string()) {
+            return;
+        }
+
+        let Some(node) = self.graph.get_node(start_id) else {
+            return;
+        };
+
+        if is_sampler_node(node) {
+            if !sampler_ids.iter().any(|id| id == start_id) {
+                sampler_ids.push(start_id.to_string());
+            }
+            return;
+        }
+
+        if get_node_type(node).starts_with("VAEEncode") {
+            for source_id in self.image_like_source_ids(start_id, node) {
+                self.find_upstream_samplers(&source_id, visited, depth + 1, sampler_ids);
+            }
+        }
+
+        for source_id in self.latent_source_ids(start_id, node) {
+            self.find_upstream_latent_samplers(&source_id, visited, depth + 1, sampler_ids);
+        }
+    }
+
     fn image_like_source_ids(&self, node_id: &str, node: &Value) -> Vec<String> {
         self.image_like_source_ids_with_wireless(node_id, node, true)
     }
@@ -207,6 +272,13 @@ impl<'a> ComfyEvaluator<'a> {
         allow_wireless: bool,
     ) -> Vec<String> {
         let mut sources = Vec::new();
+
+        if get_node_type(node) == "Reroute" {
+            if let Some(source_id) = self.reroute_image_like_source_id(node) {
+                self.push_existing_source(&mut sources, source_id);
+            }
+            return sources;
+        }
 
         for input_name in IMAGE_LIKE_INPUT_NAMES {
             for source_id in self.input_source_ids(node_id, node, input_name, allow_wireless) {
@@ -235,6 +307,38 @@ impl<'a> ComfyEvaluator<'a> {
 
         sources.sort_by(|left, right| compare_node_ids(left, right));
         sources
+    }
+
+    fn reroute_image_like_source_id(&self, node: &Value) -> Option<String> {
+        for input_name in ["", "value", "input", "any"]
+            .into_iter()
+            .chain(IMAGE_LIKE_INPUT_NAMES)
+        {
+            match get_input_connection(node, input_name) {
+                InputConnection::Connected(source_id) => return Some(source_id),
+                InputConnection::DeclaredUnresolved => return None,
+                InputConnection::Unconnected => {}
+            }
+        }
+
+        for input in node.get("inputs").and_then(Value::as_array)? {
+            let input_type = input.get("type").and_then(Value::as_str).unwrap_or("");
+            if !input_type.eq_ignore_ascii_case("IMAGE")
+                && !input_type.eq_ignore_ascii_case("LATENT")
+            {
+                continue;
+            }
+            let Some(input_name) = input.get("name").and_then(Value::as_str) else {
+                continue;
+            };
+            match get_input_connection(node, input_name) {
+                InputConnection::Connected(source_id) => return Some(source_id),
+                InputConnection::DeclaredUnresolved => return None,
+                InputConnection::Unconnected => {}
+            }
+        }
+
+        None
     }
 
     fn input_source_ids(
@@ -306,7 +410,12 @@ impl<'a> ComfyEvaluator<'a> {
         let mut upstream_sampler_ids = Vec::new();
         for source_id in source_ids {
             let mut visited = HashSet::new();
-            self.find_upstream_samplers(&source_id, &mut visited, 0, &mut upstream_sampler_ids);
+            self.find_upstream_latent_samplers(
+                &source_id,
+                &mut visited,
+                0,
+                &mut upstream_sampler_ids,
+            );
         }
 
         if let Some(conditioning_id) = get_source_id(self.graph, sampler_id, "positive") {
@@ -333,10 +442,21 @@ impl<'a> ComfyEvaluator<'a> {
     }
 
     fn sampler_latent_source_ids(&self, sampler_id: &str, node: &Value) -> Vec<String> {
+        self.latent_source_ids(sampler_id, node)
+    }
+
+    fn latent_source_ids(&self, node_id: &str, node: &Value) -> Vec<String> {
         let mut sources = Vec::new();
 
+        if get_node_type(node) == "Reroute" {
+            if let Some(source_id) = self.reroute_image_like_source_id(node) {
+                self.push_existing_source(&mut sources, source_id);
+            }
+            return sources;
+        }
+
         for input_name in SAMPLER_LATENT_INPUT_NAMES {
-            for source_id in self.input_source_ids(sampler_id, node, input_name, true) {
+            for source_id in self.input_source_ids(node_id, node, input_name, true) {
                 self.push_existing_source(&mut sources, source_id);
             }
         }
@@ -352,7 +472,7 @@ impl<'a> ComfyEvaluator<'a> {
                 }
 
                 if let Some(input_name) = input.get("name").and_then(Value::as_str) {
-                    for source_id in self.input_source_ids(sampler_id, node, input_name, true) {
+                    for source_id in self.input_source_ids(node_id, node, input_name, true) {
                         self.push_existing_source(&mut sources, source_id);
                     }
                 }

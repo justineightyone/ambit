@@ -35,6 +35,8 @@ interface UseAppActionsProps {
     viewingImageId: string | null;
     selectedImageIndex: number | null;
     setSelectedImageIndex: React.Dispatch<React.SetStateAction<number | null>>;
+    viewerImages: AIImage[];
+    setViewerSessionImages: React.Dispatch<React.SetStateAction<AIImage[] | null>>;
     fileOps: AppActionFileOps;
     selectedIds: Set<string>;
     setSelectedIds: React.Dispatch<React.SetStateAction<Set<string>>>;
@@ -51,6 +53,8 @@ export const useAppActions = ({
     viewingImageId,
     selectedImageIndex,
     setSelectedImageIndex,
+    viewerImages,
+    setViewerSessionImages,
     fileOps,
     selectedIds,
     setSelectedIds,
@@ -71,8 +75,22 @@ export const useAppActions = ({
     const setPrivacyEnabled = useSettingsStore(s => s.setPrivacyEnabled);
 
     const refreshCollections = useCollectionStore(s => s.refreshCollections);
+    const refreshSmartCounts = useCollectionStore(s => s.refreshSmartCounts);
 
     const { openModal, closeModal, pendingViewerDeleteId, setPendingViewerDeleteId } = modals;
+
+    const refreshCollectionsAfterImageFlagChange = React.useCallback(() => {
+        void refreshCollections(true);
+
+        if (!filters.collectionId) return;
+
+        void refreshSmartCounts({
+            collectionIds: [filters.collectionId],
+            includeArchived: true,
+            includePromptSearch: true,
+            markPending: true
+        });
+    }, [filters.collectionId, refreshCollections, refreshSmartCounts]);
 
     const persistPinChanges = React.useCallback(async (
         ids: string[],
@@ -83,7 +101,7 @@ export const useAppActions = ({
     ) => {
         try {
             await Promise.all(ids.map(id => toggleImagePin(id, isPinned)));
-            void refreshCollections(true);
+            refreshCollectionsAfterImageFlagChange();
         } catch (error) {
             console.error('[Pin] Failed to persist pin state', error);
             setImages(previousImages);
@@ -94,7 +112,7 @@ export const useAppActions = ({
             });
             addToast(errorMessage, 'error');
         }
-    }, [refreshCollections, setImages, addToast, queryClient, imagesQueryKey]);
+    }, [refreshCollectionsAfterImageFlagChange, setImages, addToast, queryClient, imagesQueryKey]);
 
     const persistFavoriteChanges = React.useCallback(async (
         ids: string[],
@@ -103,23 +121,26 @@ export const useAppActions = ({
     ) => {
         try {
             await Promise.all(ids.map(id => toggleImageFavorite(id, isFavorite)));
+            refreshCollectionsAfterImageFlagChange();
         } catch (error) {
             console.error('[Favorite] Failed to persist favorite state', error);
             setImages(previousImages);
             restoreImagesInQueryCaches(queryClient, previousImages);
             addToast('Failed to update favorite state', 'error');
         }
-    }, [addToast, queryClient, setImages]);
+    }, [addToast, queryClient, refreshCollectionsAfterImageFlagChange, setImages]);
 
-    const executeDeleteByIds = React.useCallback((ids: string[], targetDeleteId: string | null = null) => {
+    const executeDeleteByIds = React.useCallback((ids: string[], targetDeleteId: string | null) => {
         fileOps.deleteImages(ids);
 
         if (targetDeleteId) {
-            const idx = images.findIndex(img => img.id === targetDeleteId);
+            const idx = viewerImages.findIndex(img => img.id === targetDeleteId);
             if (idx !== -1) {
+                const remainingViewerImages = viewerImages.filter(img => !ids.includes(img.id));
                 let nextIndex: number | null = idx;
-                if (images.length === 1) nextIndex = null;
-                else if (idx === images.length - 1) nextIndex = idx - 1;
+                if (remainingViewerImages.length === 0) nextIndex = null;
+                else if (idx >= remainingViewerImages.length) nextIndex = remainingViewerImages.length - 1;
+                setViewerSessionImages(remainingViewerImages.length > 0 ? remainingViewerImages : null);
                 setSelectedImageIndex(nextIndex);
             }
         } else {
@@ -127,7 +148,7 @@ export const useAppActions = ({
         }
         closeModal('deleteConfirm');
         setPendingViewerDeleteId(null);
-    }, [fileOps, images, setSelectedImageIndex, setSelectedIds, closeModal, setPendingViewerDeleteId]);
+    }, [fileOps, viewerImages, setViewerSessionImages, setSelectedImageIndex, setSelectedIds, closeModal, setPendingViewerDeleteId]);
 
     const executeDelete = React.useCallback(() => {
         const ids = pendingViewerDeleteId ? [pendingViewerDeleteId] : Array.from(selectedIds);

@@ -69,6 +69,14 @@ async showAppLogFolder() : Promise<Result<null, string>> {
     else return { status: "error", error: e  as any };
 }
 },
+async resolveExactDuplicateGroups(resolutions: ExactDuplicateResolution[]) : Promise<Result<ExactDuplicateResolutionResult, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("resolve_exact_duplicate_groups", { resolutions }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async backfillImageFileHashes(limit: number | null) : Promise<Result<FileHashBackfillResult, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("backfill_image_file_hashes", { limit }) };
@@ -112,9 +120,9 @@ async optimizeDatabase() : Promise<Result<string, string>> {
     else return { status: "error", error: e  as any };
 }
 },
-async purgeDatabase() : Promise<Result<string, string>> {
+async schedulePurgeTransaction(transactionId: string, journalJson: string) : Promise<Result<string, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("purge_database") };
+    return { status: "ok", data: await TAURI_INVOKE("schedule_purge_transaction", { transactionId, journalJson }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -576,6 +584,9 @@ export type BackupInfo = { name: string; path: string; createdAt: string; sizeBy
 export type ComfyMetadataPreview = { tool: string; model: string; seed: number | null; steps: number; cfg: number; sampler: string; positivePrompt: string; negativePrompt: string; loras: string[]; controlNets: string[]; ipAdapters: string[]; embeddings: string[]; hypernetworks: string[]; generationType: string; hasWorkflowHint: boolean; hasWorkflowJson: boolean }
 export type ComfyParserDiagnosticsReport = { chunkKeys: string[]; hasPromptChunk: boolean; hasWorkflowChunk: boolean; graphNodeCount: number; attemptedLayers: string[]; fieldSources: Partial<{ [key in string]: string }>; metadata: ComfyMetadataPreview }
 export type DbDiagnostics = { dbPath: string; activeDbPath: string; localDbPath: string; roamingDbPath: string; appLogDir: string; appLogPath: string; isUsingRoamingFallback: boolean; imageCount: number; deletedCount: number; modelCount: number; cacheCount: number; toolNullCount: number }
+export type ExactDuplicateKeeperState = { id: string; isFavorite: boolean; isPinned: boolean; userMasked: boolean | null }
+export type ExactDuplicateResolution = { keepId: string; removeIds: string[] }
+export type ExactDuplicateResolutionResult = { resolvedGroups: number; removedIds: string[]; keepers: ExactDuplicateKeeperState[] }
 export type FacetResourceTouches = { checkpoints: string[]; loras: string[]; embeddings: string[]; hypernetworks: string[]; controlNets: string[]; ipAdapters: string[]; tools: string[] }
 export type FileEntry = { path: string; modified: number; size: number }
 export type FileHashBackfillResult = { scanned: number; updated: number; missing: number; errors: number; remaining: number; wasCancelled: boolean }

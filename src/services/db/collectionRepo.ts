@@ -32,6 +32,7 @@ export interface DbCollection {
     dynamic_safe_thumbnail_path?: string | null;
     dynamic_thumbnail_is_sensitive?: number | null;
     dynamic_thumbnail_cached_at?: number | null;
+    dynamic_count?: number | null;
 }
 
 interface CollectionThumbnailRow {
@@ -80,6 +81,14 @@ interface DynamicThumbnailCacheUpdate {
     thumbnailIsSensitive?: boolean | null;
 }
 
+interface DynamicCountCacheUpdate {
+    collectionId: string;
+    count: number;
+    collectionUpdatedAt: number;
+}
+
+const dynamicCountCacheWriteTails = new Map<string, Promise<void>>();
+
 interface CollectionStatsOptions {
     includeThumbnails?: boolean;
 }
@@ -114,7 +123,7 @@ const toDisplayUrl = (rawPath?: string | null): string | undefined => {
     return convertFileSrc(normalizePath(rawPath));
 };
 
-const nowMs = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
+const nowMs = () => performance.now();
 
 const logStartupDuration = (label: string, startedAt: number) => {
     const elapsed = Math.round(nowMs() - startedAt);
@@ -198,6 +207,41 @@ const writeDynamicThumbnailCache = async (
     }
 };
 
+export const cacheSmartCollectionCount = async (
+    collectionId: string,
+    count: number,
+    collectionUpdatedAt: number
+): Promise<void> => {
+    if (isBrowserMockMode()) return;
+
+    const previousWrite = dynamicCountCacheWriteTails.get(collectionId) ?? Promise.resolve();
+    const update: DynamicCountCacheUpdate = { collectionId, count, collectionUpdatedAt };
+    const write = previousWrite.then(async () => {
+        try {
+            const db = await getDb();
+            await db.execute(
+                `UPDATE collections
+                 SET dynamic_count = ?
+                 WHERE id = ?
+                   AND filter_state IS NOT NULL
+                   AND updated_at = ?`,
+                [update.count, update.collectionId, update.collectionUpdatedAt]
+            );
+        } catch (error) {
+            console.error(`[DB] Failed to cache smart collection count ${update.collectionId}`, error);
+        }
+    });
+
+    dynamicCountCacheWriteTails.set(collectionId, write);
+    try {
+        await write;
+    } finally {
+        if (dynamicCountCacheWriteTails.get(collectionId) === write) {
+            dynamicCountCacheWriteTails.delete(collectionId);
+        }
+    }
+};
+
 const clearDynamicThumbnailCacheForCollections = async (
     db: Awaited<ReturnType<typeof getDb>>,
     collectionIds: string[]
@@ -241,12 +285,26 @@ export const clearCollectionThumbnailCacheForImages = async (imageIds: string[])
              WHERE image_id IN (${placeholders})`,
             idBatch
         );
-        if (Array.isArray(rows)) {
-            collectionIds.push(...rows.map(row => row.collection_id));
-        }
+        collectionIds.push(...(rows ?? []).map(row => row.collection_id));
     }
 
     await clearDynamicThumbnailCacheForCollections(db, collectionIds);
+};
+
+export const clearInvokeBoardThumbnailCaches = async () => {
+    if (isBrowserMockMode()) return;
+
+    const db = await getDb();
+    await db.execute(
+        `UPDATE collections
+         SET dynamic_thumbnail_path = NULL,
+             dynamic_safe_thumbnail_path = NULL,
+             dynamic_thumbnail_is_sensitive = NULL,
+             dynamic_thumbnail_cached_at = NULL
+         WHERE source = 'invoke'
+           AND filter_state IS NULL
+           AND (custom_thumbnail IS NULL OR custom_thumbnail = '')`
+    );
 };
 
 export const clearAllCollectionThumbnailCaches = async () => {
@@ -435,6 +493,10 @@ export const ensureCollectionSchema = async () => {
                 'dynamic_thumbnail_cached_at',
                 'ALTER TABLE collections ADD COLUMN dynamic_thumbnail_cached_at INTEGER'
             );
+            await addColumnIfMissing(
+                'dynamic_count',
+                'ALTER TABLE collections ADD COLUMN dynamic_count INTEGER'
+            );
         } catch (e) {
             console.error('[DB] Failed to ensure collection schema', e);
         }
@@ -464,11 +526,22 @@ export const upsertCollection = async (collection: Partial<Collection> & { id: s
                 is_archived = excluded.is_archived,
                 is_pinned = excluded.is_pinned,
                 created_at = excluded.created_at,
+                dynamic_count = CASE
+                    WHEN collections.filter_state IS excluded.filter_state
+                     AND collections.manual_exclusions IS excluded.manual_exclusions
+                    THEN collections.dynamic_count
+                    ELSE NULL
+                END,
                 filter_state = excluded.filter_state,
                 manual_exclusions = excluded.manual_exclusions,
                 custom_thumbnail = excluded.custom_thumbnail,
                 source = excluded.source,
-                updated_at = excluded.updated_at`,
+                updated_at = CASE
+                    WHEN collections.filter_state IS excluded.filter_state
+                     AND collections.manual_exclusions IS excluded.manual_exclusions
+                    THEN excluded.updated_at
+                    ELSE MAX(COALESCE(collections.updated_at, 0) + 1, ?)
+                END`,
                 [
                     collection.id,
                     collection.name,
@@ -480,7 +553,8 @@ export const upsertCollection = async (collection: Partial<Collection> & { id: s
                     collection.manualExclusions ? JSON.stringify(collection.manualExclusions) : null,
                     collection.customThumbnail || null,
                     collection.source || 'ambit',
-                    collection.updatedAt || now
+                    collection.updatedAt || now,
+                    now
                 ]
             );
         } catch (e) {
@@ -577,6 +651,7 @@ export const getAllCollectionsWithStats = async (options: CollectionStatsOptions
     const countMap = new Map(counts.map(c => [c.collection_id, c.count]));
 
     let mappedCollections: Collection[] = collections.map(c => {
+        const filters = parsePersistedCollectionFilters(c.filter_state);
         const collection: Collection = {
             id: c.id,
             name: c.name,
@@ -585,10 +660,10 @@ export const getAllCollectionsWithStats = async (options: CollectionStatsOptions
             isPinned: !!c.is_pinned,
             createdAt: c.created_at,
             updatedAt: c.updated_at || c.created_at, // Fallback to created_at if updated_at is null
-            count: countMap.get(c.id) || 0,
+            count: filters ? c.dynamic_count ?? undefined : countMap.get(c.id) || 0,
             imageIds: [],
             customThumbnail: c.custom_thumbnail,
-            filters: parsePersistedCollectionFilters(c.filter_state),
+            filters,
             manualExclusions: c.manual_exclusions ? JSON.parse(c.manual_exclusions) : undefined,
             source: c.source
         };
@@ -603,8 +678,7 @@ export const getAllCollectionsWithStats = async (options: CollectionStatsOptions
                 if (collection.customThumbnail) return true;
                 if (collection.filters || collection.thumbnail) return false;
 
-                const imageCount = collection.count ?? collection.imageIds.length;
-                return imageCount > 0;
+                return collection.count! > 0;
             })
             .map(collection => ({
                 id: collection.id,
@@ -619,12 +693,8 @@ export const getAllCollectionsWithStats = async (options: CollectionStatsOptions
         logStartupDuration('collection thumbnail hydration', thumbnailStartedAt);
     }
 
-    // Smart collection counts are calculated lazily via refreshSmartCollectionCounts().
-    // Do not block the initial collection list on smart-thumbnail queries: those can
-    // require prompt scans on large libraries and make collections appear missing.
-    const result = mappedCollections.map(c => c.filters ? { ...c, count: 0 } : c);
     logStartupDuration('collection load', startedAt);
-    return result;
+    return mappedCollections;
 };
 
 export const getCollectionThumbnailSummaries = async (
@@ -772,7 +842,7 @@ export const getSmartCollectionSummaries = async (
             const safe = safeRows[0];
             const thumbnailPath = normal?.thumbnail_path || null;
             summaries[query.id] = {
-                ...(summaries[query.id] || { count: 0, thumbnailSourceKind: 'dynamic' as const }),
+                ...summaries[query.id],
                 thumbnail: toDisplayUrl(thumbnailPath),
                 safeThumbnail: toDisplayUrl(safe?.thumbnail_path),
                 thumbnailIsSensitive: normal?.privacy_hidden === 1,
@@ -903,16 +973,11 @@ export const getCollectionsForImage = async (imageId: string): Promise<string[]>
     }
 
     const db = await getDb();
-    try {
-        const res = await db.select<{ collection_id: string }[]>(
-            'SELECT collection_id FROM collection_images WHERE image_id = ?',
-            [imageId]
-        );
-        return res.map(r => r.collection_id);
-    } catch (e) {
-        console.error('[DB] Failed to get collections for image', e);
-        return [];
-    }
+    const res = await db.select<{ collection_id: string }[]>(
+        'SELECT collection_id FROM collection_images WHERE image_id = ?',
+        [imageId]
+    );
+    return res.map(r => r.collection_id);
 };
 
 /**

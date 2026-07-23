@@ -4,6 +4,7 @@ import { Loader2, Shield, RefreshCw, CheckCircle2, Trash2, AlertTriangle, Extern
 import { useLibraryContext } from '../../../contexts/LibraryContext';
 import { useLibraryStore } from '../../../stores/libraryStore';
 import { pruneMissingLinks, verifyLibraryIntegrity } from '../../../services/db/maintenanceRepo';
+import { TooltipButton } from '../../../components/ui/InfoTooltip';
 
 interface LibraryHealthProps {
     mode?: 'compact' | 'detailed';
@@ -30,8 +31,6 @@ const LibraryHealthBase: React.FC<LibraryHealthProps> = ({ mode = 'detailed', on
     }, [refreshMaintenanceCounts]);
 
     const handleVerify = async () => {
-        if (isScanningMissingFiles) return;
-
         const abortController = new AbortController();
         const isCurrentAudit = () => useLibraryStore.getState().missingScanAbortController === abortController;
         setPruningStatus('idle');
@@ -69,10 +68,10 @@ const LibraryHealthBase: React.FC<LibraryHealthProps> = ({ mode = 'detailed', on
     };
 
     const handlePrune = async () => {
-        if (!result || result.missingIds.length === 0) return;
+        const missingIds = result!.missingIds;
         setPruningStatus('running');
         try {
-            await pruneMissingLinks(result.missingIds);
+            await pruneMissingLinks(missingIds);
             setPruningStatus('done');
             setTimeout(() => window.location.reload(), 1500);
         } catch (e) {
@@ -106,13 +105,14 @@ const LibraryHealthBase: React.FC<LibraryHealthProps> = ({ mode = 'detailed', on
                                     </div>
                                     <div className="text-[10px] text-gray-400">{result.scanned} Scanned</div>
                                 </div>
-                                <button
+                                <TooltipButton
+                                    label="Open Maintenance"
+                                    content="Open Maintenance"
                                     onClick={onNavigateToMaintenance}
                                     className="p-2.5 bg-white dark:bg-white/5 hover:bg-gray-50 dark:hover:bg-white/10 text-gray-400 hover:text-sage-500 rounded-xl transition-all border border-gray-100 dark:border-white/5 shadow-sm"
-                                    title="Open Maintenance"
                                 >
                                     <ExternalLink className="w-4 h-4" />
-                                </button>
+                                </TooltipButton>
                             </div>
                         ) : (
                             <button

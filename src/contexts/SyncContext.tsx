@@ -22,7 +22,6 @@ import { createLiveFacetRefreshQueue } from '../utils/liveFacetRefreshQueue';
 import { TouchedFacetResources } from '../utils/touchedFacetTypes';
 import { refreshStartupFacetCache } from '../utils/startupFacetRefresh';
 import {
-    purgeLibrary,
     rebuildFacetCache,
     rebuildFacetCacheIncrementalBatchStrict,
     rebuildFacetCacheStrict,
@@ -33,6 +32,8 @@ import { scanForOrphans } from '../services/invoke/orphanScanner';
 import { syncImages } from '../services/invoke/syncService';
 import { appRepository } from '../services/repository';
 import { watcherService } from '../services/WatcherService';
+import { DEFAULT_APP_SETTINGS } from '../constants/defaultSettings';
+import { settingsPersistenceCoordinator } from '../utils/settingsPersistenceCoordinator';
 
 interface StartInvokeSyncOptions {
     syncFavorites?: boolean;
@@ -67,7 +68,7 @@ const mergePendingInvokePerfContext = (
         lastEventAt: Math.max(current.lastEventAt, incoming.lastEventAt),
         eventCount: current.eventCount + incoming.eventCount,
         pathCount: current.pathCount + incoming.pathCount,
-        mergedCycleCount: (current.mergedCycleCount ?? 1) + (incoming.mergedCycleCount ?? 1)
+        mergedCycleCount: current.mergedCycleCount! + (incoming.mergedCycleCount ?? 1)
     };
 };
 
@@ -94,7 +95,7 @@ const mergePendingTargetedPerfContext = (
         lastEventAt: Math.max(current.lastEventAt, incoming.lastEventAt),
         eventCount: current.eventCount + incoming.eventCount,
         pathCount: current.pathCount + incoming.pathCount,
-        mergedCycleCount: (current.mergedCycleCount ?? 1) + (incoming.mergedCycleCount ?? 1)
+        mergedCycleCount: current.mergedCycleCount! + (incoming.mergedCycleCount ?? 1)
     };
 };
 
@@ -120,7 +121,7 @@ export interface TargetedLiveSyncResult {
     importedCount: number;
 }
 
-export const SyncProvider: React.FC<{ children: ReactNode; onSyncComplete?: (scope?: MetadataRefreshScope) => void | Promise<void> }> = ({ children, onSyncComplete }) => {
+export const SyncProvider: React.FC<{ children: ReactNode; onSyncComplete?: (scope: MetadataRefreshScope) => void | Promise<void> }> = ({ children, onSyncComplete }) => {
     const { settings, settingsRef, setSettings } = useSettings();
     const { addToast } = useToast();
     const queryClient = useQueryClient();
@@ -148,6 +149,9 @@ export const SyncProvider: React.FC<{ children: ReactNode; onSyncComplete?: (sco
     const pendingTargetedPathsRef = useRef<Set<string>>(new Set());
     const pendingTargetedPerfRef = useRef<TargetedLiveSyncPerfContext | null>(null);
     const targetedLiveDrainPromiseRef = useRef<Promise<TargetedLiveSyncResult> | null>(null);
+    const incrementFacetCacheVersion = useCallback(() => {
+        useLibraryStore.getState().incrementFacetCacheVersion();
+    }, []);
     const liveFacetRefreshQueueRef = useRef(createLiveFacetRefreshQueue({
         runIncremental: async (facetTypes: FacetType[]) => {
             return await rebuildFacetCacheIncrementalBatchStrict(facetTypes);
@@ -158,9 +162,7 @@ export const SyncProvider: React.FC<{ children: ReactNode; onSyncComplete?: (sco
         runFullFallback: async () => {
             return await rebuildFacetCacheStrict();
         },
-        onRefreshApplied: () => {
-            useLibraryStore.getState().incrementFacetCacheVersion();
-        }
+        onRefreshApplied: incrementFacetCacheVersion
     }));
 
     const queueLiveFacetRefresh = useCallback((
@@ -220,8 +222,8 @@ export const SyncProvider: React.FC<{ children: ReactNode; onSyncComplete?: (sco
             && !!settingsRef.current.invokeAiPath
             && shouldImportOrphans === false;
 
-        if (syncStatus === 'syncing' && (options.mode === 'manual' || options.mode === 'startup')) return;
-        if ((syncStatus === 'syncing' || isLiveSyncingRef.current) && options.mode === 'live') {
+        if ((options.mode === 'manual' || options.mode === 'startup') && syncStatus === 'syncing') return;
+        if (options.mode === 'live' && (syncStatus === 'syncing' || isLiveSyncingRef.current)) {
             pendingInvokeLiveSyncRef.current = true;
             pendingInvokeLivePerfRef.current = mergePendingInvokePerfContext(pendingInvokeLivePerfRef.current, livePerfContext);
             debugLiveWatchPerf('Invoke live rerun queued', {
@@ -304,16 +306,13 @@ export const SyncProvider: React.FC<{ children: ReactNode; onSyncComplete?: (sco
                         lastSyncedAt
                     }
                 );
-                const nextSettings = {
-                    ...useSettingsStore.getState().settings,
-                    invokeDbSnapshot: snapshot
-                };
-                setSettings(nextSettings);
-
-                const appState = await appRepository.load();
-                await appRepository.save({
-                    ...appState,
-                    settings: nextSettings
+                await settingsPersistenceCoordinator.run(async () => {
+                    const nextSettings = {
+                        ...useSettingsStore.getState().settings,
+                        invokeDbSnapshot: snapshot
+                    };
+                    setSettings(nextSettings);
+                    await useSettingsStore.getState().flushSettings(nextSettings);
                 });
             } catch (snapshotError) {
                 console.warn('[Startup Catch-up] Failed to persist Invoke DB snapshot.', snapshotError);
@@ -494,7 +493,7 @@ export const SyncProvider: React.FC<{ children: ReactNode; onSyncComplete?: (sco
                                 touchedFacetTypes,
                                 touchedFacetResources,
                                 orphanScanEnabled: shouldImportOrphans,
-                                onRefreshApplied: () => useLibraryStore.getState().incrementFacetCacheVersion()
+                                onRefreshApplied: incrementFacetCacheVersion
                             });
                         } else {
                             await rebuildFacetCache();
@@ -507,16 +506,10 @@ export const SyncProvider: React.FC<{ children: ReactNode; onSyncComplete?: (sco
                     }
 
                     const clearedMessageProgress = { ...useLibraryStore.getState().syncProgress, message: undefined };
-                    if (isStartupMode && startupSyncVisible) {
-                        setSyncProgress(clearedMessageProgress);
-                    } else if (!isStartupMode) {
-                        setSyncProgress(clearedMessageProgress);
-                    }
+                    setSyncProgress(clearedMessageProgress);
 
                     // Trigger complete routines
-                    if (totalProcessed > 0 && (options.mode === 'manual' || options.mode === 'startup')) {
-                        addToast(`Synchronization complete: ${totalProcessed} items processed.`, 'success');
-                    }
+                    addToast(`Synchronization complete: ${totalProcessed} items processed.`, 'success');
                     
                     if (options.mode !== 'startup') {
                         await onSyncComplete?.('full');
@@ -524,9 +517,7 @@ export const SyncProvider: React.FC<{ children: ReactNode; onSyncComplete?: (sco
                         if (shouldRefreshBoardCollectionThumbnails) {
                             await refreshCollections();
                         }
-                        if (startupSyncVisible) {
-                            setSyncStatus('complete');
-                        }
+                        setSyncStatus('complete');
                     }
 
                     if (shouldRefreshBoardCollectionThumbnails) {
@@ -554,7 +545,7 @@ export const SyncProvider: React.FC<{ children: ReactNode; onSyncComplete?: (sco
                             touchedFacetTypes,
                             touchedFacetResources,
                             orphanScanEnabled: shouldImportOrphans,
-                            onRefreshApplied: () => useLibraryStore.getState().incrementFacetCacheVersion()
+                            onRefreshApplied: incrementFacetCacheVersion
                         });
                     }
                     debugLiveWatchPerf('Invoke sync no-op skipped metadata refresh', {
@@ -570,10 +561,6 @@ export const SyncProvider: React.FC<{ children: ReactNode; onSyncComplete?: (sco
                 setSettings(prev => ({ ...prev, lastSyncedAt: newTs }));
             }
             await persistInvokeSnapshot(snapshotCursor);
-
-            if (hasChanges && onSyncComplete && options.mode !== 'live') {
-                await onSyncComplete('full');
-            }
 
             if (totalProcessed === 0 && options.mode === 'manual') {
                 addToast('Synchronization complete: No new changes.', 'info');
@@ -623,7 +610,7 @@ export const SyncProvider: React.FC<{ children: ReactNode; onSyncComplete?: (sco
                 }
             }
         }
-    }, [syncStatus, addToast, onSyncComplete, queryClient, queueLiveFacetRefresh, setSettings, setCollections, refreshCollections, refreshCollectionThumbnails, setSyncStatus, setSyncProgress, setIsLiveSyncing, startLiveWatchSession, updateLiveWatchSession, reportLiveImagesReceived]);
+    }, [syncStatus, addToast, onSyncComplete, queryClient, queueLiveFacetRefresh, incrementFacetCacheVersion, setSettings, setCollections, refreshCollections, refreshCollectionThumbnails, setSyncStatus, setSyncProgress, setIsLiveSyncing, startLiveWatchSession, updateLiveWatchSession, reportLiveImagesReceived]);
 
     const startTargetedLiveSync = useCallback(async (paths: string[], perfContext?: TargetedLiveSyncPerfContext) => {
         if (isBrowserMockMode()) {
@@ -811,71 +798,77 @@ export const SyncProvider: React.FC<{ children: ReactNode; onSyncComplete?: (sco
             return;
         }
 
+        useSettingsStore.getState().cancelPendingSave();
         try {
-            console.log('[Purge] Starting library purge...');
+            await settingsPersistenceCoordinator.runExclusive(async () => {
+                console.log('[Purge] Starting library purge...');
+                console.log('[Purge] Stopping background services...');
 
-            // 1. Graceful Shutdown & Auto-Healing Disable
-            console.log('[Purge] Stopping background services...');
-            setSettings(s => ({ ...s, enableAutoThumbnailHealing: false })); // Disable first to stop CPU usage
+                const resumeWatcher = await watcherService.pauseWatching();
+                const libraryState = useLibraryStore.getState();
+                const healingWasPaused = libraryState.backgroundHealingPaused;
+                cancelSyncAction();
+                libraryState.cancelThumbnailRegeneration();
+                libraryState.cancelImport();
+                libraryState.setBackgroundHealingPaused(true);
 
-            await watcherService.stopWatching();
-            useLibraryStore.getState().cancelThumbnailRegeneration();
-            useLibraryStore.getState().cancelImport();
-            useLibraryStore.getState().setBackgroundHealingPaused(true);
+                try {
+                    console.log('[Purge] Committing crash-recoverable factory reset...');
+                    const scheduled = await appRepository.schedulePurge((legacyState) => {
+                        const cleanSettings: AppSettings = {
+                            ...legacyState.settings,
+                            lastSyncedAt: null,
+                            monitoredFolders: [],
+                            invokeAiPath: undefined,
+                            a1111Path: undefined,
+                            comfyUiPath: undefined,
+                            resourceFolders: [],
+                            importIntermediates: false,
+                            enableAutoThumbnailHealing: true,
+                            thumbnailOptimizationProfile: 'balanced',
+                            promptMaskingEnabled: DEFAULT_APP_SETTINGS.promptMaskingEnabled,
+                            maskedKeywords: [...DEFAULT_APP_SETTINGS.maskedKeywords],
+                            maskingMode: DEFAULT_APP_SETTINGS.maskingMode,
+                            hasCompletedOnboarding: false
+                        };
+                        return {
+                            ...legacyState,
+                            images: [],
+                            collections: [],
+                            smartCollections: [],
+                            recentSearches: [],
+                            settings: cleanSettings
+                        };
+                    });
 
-            // 2. Prepare Clean State (Settings & Legacy Data)
-            console.log('[Purge] Resetting settings and legacy storage...');
+                    useSettingsStore.setState({ settings: scheduled.state.settings });
+                    try {
+                        console.log('[Purge] Clearing React Query cache and store...');
+                        await queryClient.resetQueries();
+                        useSearchStore.getState().clearAllFilters();
+                        useSearchStore.getState().setImages([]);
+                    } catch (cleanupError) {
+                        console.error('[Purge] Post-schedule UI cleanup failed; restart is still required:', cleanupError);
+                    }
 
-            const legacyState = await appRepository.load();
-
-            // Define clean settings
-            const cleanSettings: AppSettings = {
-                ...legacyState.settings,
-                lastSyncedAt: null,
-                monitoredFolders: [],
-                invokeAiPath: undefined,
-                a1111Path: undefined,
-                comfyUiPath: undefined,
-                resourceFolders: [], // Clear added model/lora folders
-                importIntermediates: false,
-                enableAutoThumbnailHealing: true, // Reset to default (True) so next run is fresh
-                thumbnailOptimizationProfile: 'balanced',
-                hasCompletedOnboarding: false // Optional: Reset onboarding for factory reset feel
-            };
-
-            // Force immediate save to disk BEFORE invoking the backend restart
-            await appRepository.save({
-                ...legacyState,
-                images: [],
-                collections: [],
-                smartCollections: [],
-                settings: cleanSettings
+                    addToast(scheduled.message, 'success');
+                    console.log('[Purge] Factory reset committed; startup recovery will materialize library.json.');
+                } catch (error) {
+                    libraryState.setBackgroundHealingPaused(healingWasPaused);
+                    try {
+                        await resumeWatcher();
+                    } catch (resumeError) {
+                        console.error('[Purge] Failed to resume watcher after scheduling failure:', resumeError);
+                    }
+                    throw error;
+                }
             });
-
-            // Update local state (for Dev mode or if restart has delay)
-            setSettings(cleanSettings);
-
-            // 3. Reset React Query cache and Zustand store
-            console.log('[Purge] Clearing React Query cache and store...');
-            await queryClient.resetQueries();
-            useSearchStore.getState().clearAllFilters();
-            useSearchStore.getState().setImages([]);
-
-            // 4. THE POINT OF NO RETURN: Trigger Backend Purge (Restarts App)
-            console.log('[Purge] Purging backend database...');
-            const backendMessage = await purgeLibrary();
-
-            // Show the backend's message (e.g., "Purge scheduled. Please restart...")
-            addToast(backendMessage, 'success');
-            console.log('[Purge] Purge complete. User should restart the app.');
-
-            // Note: In production, the app auto-restarts. In dev mode, user must restart terminal.
         } catch (e: unknown) {
             const message = e instanceof Error ? e.message : String(e);
             console.error("[Purge] Purge failed:", e);
             addToast('Purge failed: ' + message, 'error');
         }
-    }, [addToast, setSettings, queryClient]);
+    }, [addToast, cancelSyncAction, queryClient]);
 
     return (
         <SyncContext.Provider value={{

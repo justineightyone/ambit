@@ -1,9 +1,14 @@
 import * as React from 'react';
-import { Search, X, Sparkles, History } from 'lucide-react';
+import { LoaderCircle, Search, Sparkles, X } from 'lucide-react';
 import { FilterState } from '../../../types';
 import { APP_NAME } from '../../../constants/app';
 import { useSearch } from '../../../contexts/SearchContext';
-import { getAdvancedDateSearchReadiness } from '../../../utils/dateFilters';
+import { TooltipButton } from '../../../components/ui/InfoTooltip';
+import type { SearchBarOption } from './SearchBarPopover';
+
+const SearchBarPopover = React.lazy(() => import('./SearchBarPopover').then(module => ({ default: module.SearchBarPopover })));
+
+type SearchReadinessApi = typeof import('../../../utils/searchQueryReadiness');
 
 interface SearchBarProps {
     filters: FilterState;
@@ -17,209 +22,359 @@ interface SearchBarProps {
         isFocused: boolean;
         onFocus: () => void;
         onBlur: () => void;
+        onOpenSearchHelp: () => void;
     };
     recentSearches: string[];
     setRecentSearches: React.Dispatch<React.SetStateAction<string[]>>;
+    scopeName: string;
+    displayedCount: number;
+    isFiltering: boolean;
+    submitNavigatesToGrid: boolean;
+    onDraftPendingChange: (isPending: boolean) => void;
 }
 
 export const SearchBar = React.memo(({
     searchProps,
     recentSearches,
-    setRecentSearches
+    setRecentSearches,
+    scopeName,
+    displayedCount,
+    isFiltering,
+    submitNavigatesToGrid,
+    onDraftPendingChange,
 }: SearchBarProps) => {
-    // Context Access
     const { filters, setFilters } = useSearch();
-
-    // 1. ISOLATED STATE: Typing here will NOT re-render the parent (App.tsx)
     const [localValue, setLocalValue] = React.useState(filters.searchQuery);
-    const [suggestions, setSuggestions] = React.useState<string[]>([]);
-    const [activeSuggestionIndex, setActiveSuggestionIndex] = React.useState(-1);
-    const dateSearchReadiness = React.useMemo(
-        () => getAdvancedDateSearchReadiness(localValue),
-        [localValue]
+    const [activeOptionIndex, setActiveOptionIndex] = React.useState(-1);
+    const [areOptionsDismissed, setAreOptionsDismissed] = React.useState(false);
+    const [operatorSuggestions, setOperatorSuggestions] = React.useState<readonly { value: string; description: string }[]>([]);
+    const [searchReadinessApi, setSearchReadinessApi] = React.useState<SearchReadinessApi | null>(null);
+    const listboxId = React.useId();
+    const statusId = React.useId();
+    const helperId = React.useId();
+    const trimmedValue = localValue.trim();
+    const queryReadiness = React.useMemo(
+        () => searchProps.isAiSearchEnabled
+            ? { isReady: true as const, issue: null }
+            : searchReadinessApi
+                ? searchReadinessApi.getSearchQueryReadiness(localValue)
+                : localValue === filters.searchQuery
+                    ? { isReady: true as const, issue: null }
+                    : {
+                        isReady: false as const,
+                        issue: { kind: 'pending' as const, message: 'Checking syntax...' },
+                    },
+        [filters.searchQuery, localValue, searchProps.isAiSearchEnabled, searchReadinessApi]
     );
-    const dateSearchHint = dateSearchReadiness.isReady
-        ? null
-        : 'Use ISO dates like date:2026-04 or before:2025';
+    const queryIssue = queryReadiness.issue;
+    const liveSearchEnabled = !searchProps.isAiSearchEnabled && !submitNavigatesToGrid;
+    const isDraftPending = liveSearchEnabled
+        && queryReadiness.isReady
+        && localValue !== filters.searchQuery;
+    const isStandardSearchPending = !searchProps.isAiSearchEnabled
+        && (isDraftPending || isFiltering);
+    const showLoadingIndicator = searchProps.isSearchingAi || isStandardSearchPending;
 
-    // 2. EXTERNAL SYNC: If filters.searchQuery changes from outside (e.g. clear button), update local
     React.useEffect(() => {
-        if (filters.searchQuery !== localValue) {
-            setLocalValue(filters.searchQuery);
+        let isCurrent = true;
+        void import('../../../utils/searchQueryReadiness').then(module => {
+            if (isCurrent) setSearchReadinessApi(module);
+        });
+
+        return () => {
+            isCurrent = false;
+        };
+    }, []);
+
+    React.useEffect(() => {
+        if (!searchProps.isFocused || searchProps.isAiSearchEnabled || operatorSuggestions.length > 0) return;
+
+        let isCurrent = true;
+        void import('../../../constants/searchOperators').then(module => {
+            if (isCurrent) setOperatorSuggestions(module.SEARCH_OPERATOR_SUGGESTIONS);
+        });
+
+        return () => {
+            isCurrent = false;
+        };
+    }, [operatorSuggestions.length, searchProps.isAiSearchEnabled, searchProps.isFocused]);
+
+    const matchingOperators = React.useMemo(() => {
+        if (searchProps.isAiSearchEnabled) return [];
+        const lastSpace = localValue.lastIndexOf(' ');
+        const lastToken = localValue.slice(lastSpace + 1).toLowerCase();
+        const prefix = lastSpace >= 0 ? localValue.slice(0, lastSpace).trimEnd() : '';
+        if (!lastToken) return [];
+
+        return operatorSuggestions.filter(operator => {
+            const normalized = operator.value.toLowerCase();
+            if (operator.value === 'OR' && !searchReadinessApi?.canAppendPromptOr(prefix)) return false;
+            return normalized.startsWith(lastToken) && normalized !== lastToken;
+        });
+    }, [localValue, operatorSuggestions, searchProps.isAiSearchEnabled, searchReadinessApi]);
+
+    const options = React.useMemo<SearchBarOption[]>(() => {
+        if (areOptionsDismissed) return [];
+
+        if (matchingOperators.length > 0) {
+            return matchingOperators.map((operator, index) => ({
+                id: `${listboxId}-option-${index}`,
+                kind: 'operator',
+                value: operator.value,
+                description: operator.description,
+            }));
         }
+
+        if (!localValue && recentSearches.length > 0) {
+            return recentSearches.map((value, index) => ({
+                id: `${listboxId}-option-${index}`,
+                kind: 'recent',
+                value,
+            }));
+        }
+
+        return [];
+    }, [areOptionsDismissed, listboxId, localValue, matchingOperators, recentSearches]);
+
+    const activeOption = activeOptionIndex >= 0 ? options[activeOptionIndex] : undefined;
+
+    React.useEffect(() => {
+        setLocalValue(filters.searchQuery);
+        setActiveOptionIndex(-1);
+        setAreOptionsDismissed(false);
     }, [filters.searchQuery]);
 
-    // 3. DEBOUNCED GLOBAL SYNC: Only update parent app after typing stops
     React.useEffect(() => {
-        if (localValue === filters.searchQuery) return;
-        if (!dateSearchReadiness.isReady) return;
+        if (!isDraftPending) return;
 
         const timer = setTimeout(() => {
-            setFilters(f => ({ ...f, searchQuery: localValue }));
-        }, 500); // 500ms for safety on large libraries
+            setFilters(previous => ({ ...previous, searchQuery: localValue }));
+        }, 500);
 
         return () => clearTimeout(timer);
-    }, [dateSearchReadiness.isReady, localValue, filters.searchQuery, setFilters]);
+    }, [isDraftPending, localValue, setFilters]);
 
-    const handleSearchChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-        const val = e.target.value;
-        setLocalValue(val);
-        setActiveSuggestionIndex(-1);
+    React.useEffect(() => {
+        onDraftPendingChange(isDraftPending);
+    }, [isDraftPending, onDraftPendingChange]);
 
-        // Suggestions logic (isolated)
-        const lastToken = val.split(' ').pop()?.toLowerCase() || '';
-        if (lastToken.length >= 1) {
-            const operators = ['OR', 'neg:', 'file:', 'all:', 'model:', 'tool:', 'lora:', 'sampler:', 'seed:', 'steps:', 'cfg:', 'w:', 'h:', 'date:', 'after:', 'before:', 'upscaled:'];
-            const opMatches = operators.filter(op => {
-                const normalized = op.toLowerCase();
-                return normalized.startsWith(lastToken) && normalized !== lastToken;
-            });
-            setSuggestions(opMatches);
-        } else {
-            setSuggestions([]);
-        }
+    React.useEffect(() => () => {
+        onDraftPendingChange(false);
+    }, [onDraftPendingChange]);
+
+    const triggerGuidance = searchProps.isAiSearchEnabled
+        ? 'Press Enter to analyze with AI.'
+        : submitNavigatesToGrid
+            ? 'Press Enter to show results in Grid.'
+            : 'Updates after you pause. Enter finishes.';
+
+    const statusMessage = React.useMemo(() => {
+        if (queryIssue) return null;
+        if (searchProps.isSearchingAi) return 'Analyzing with Gemini…';
+        if (!trimmedValue) return null;
+        if (searchProps.isAiSearchEnabled || submitNavigatesToGrid) return triggerGuidance;
+        if (isDraftPending || isFiltering) return `Searching ${scopeName}…`;
+        if (displayedCount === 0) return `No matches in ${scopeName}.`;
+        return `${displayedCount.toLocaleString()} ${displayedCount === 1 ? 'match' : 'matches'} in ${scopeName}.`;
+    }, [
+        queryIssue,
+        displayedCount,
+        filters.searchQuery,
+        isFiltering,
+        isDraftPending,
+        localValue,
+        scopeName,
+        searchProps.isAiSearchEnabled,
+        searchProps.isSearchingAi,
+        submitNavigatesToGrid,
+        triggerGuidance,
+        trimmedValue,
+    ]);
+
+    const handleSearchChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+        setLocalValue(event.target.value);
+        setActiveOptionIndex(-1);
+        setAreOptionsDismissed(false);
     };
 
-    const selectSuggestion = (index: number) => {
-        if (index < 0 || index >= suggestions.length) return;
-        const s = suggestions[index];
+    const selectOperator = (value: string) => {
         const lastSpace = localValue.lastIndexOf(' ');
         const prefix = lastSpace >= 0 ? localValue.substring(0, lastSpace + 1) : '';
-        const newVal = prefix + s + ' ';
-        setLocalValue(newVal);
-        setSuggestions([]);
-        if (getAdvancedDateSearchReadiness(newVal).isReady) {
-            setFilters(f => ({ ...f, searchQuery: newVal }));
+        const nextValue = `${prefix}${value}${value.endsWith(':') ? '' : ' '}`;
+        setLocalValue(nextValue);
+        setActiveOptionIndex(-1);
+        setAreOptionsDismissed(true);
+    };
+
+    const selectRecentSearch = (value: string) => {
+        setLocalValue(value);
+        setActiveOptionIndex(-1);
+        setAreOptionsDismissed(true);
+        searchProps.submitSearch(value);
+    };
+
+    const selectOption = (option: SearchBarOption) => {
+        if (option.kind === 'operator') {
+            selectOperator(option.value);
+        } else {
+            selectRecentSearch(option.value);
         }
     };
 
-    const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
-        if (suggestions.length > 0) {
-            if (e.key === 'ArrowDown') {
-                e.preventDefault();
-                setActiveSuggestionIndex(prev => (prev + 1) % suggestions.length);
+    const handleKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
+        if (event.key === 'Escape') {
+            event.preventDefault();
+            event.stopPropagation();
+            setActiveOptionIndex(-1);
+            setAreOptionsDismissed(true);
+            searchProps.inputRef.current?.blur();
+            return;
+        }
+
+        if (options.length > 0) {
+            if (event.key === 'ArrowDown') {
+                event.preventDefault();
+                setActiveOptionIndex(previous => (previous + 1) % options.length);
                 return;
             }
-            if (e.key === 'ArrowUp') {
-                e.preventDefault();
-                setActiveSuggestionIndex(prev => (prev - 1 + suggestions.length) % suggestions.length);
+            if (event.key === 'ArrowUp') {
+                event.preventDefault();
+                setActiveOptionIndex(previous => (previous - 1 + options.length) % options.length);
                 return;
             }
-            if (e.key === 'Enter' || e.key === 'Tab') {
-                if (activeSuggestionIndex >= 0) {
-                    e.preventDefault();
-                    selectSuggestion(activeSuggestionIndex);
-                    return;
-                }
+            if (event.key === 'Enter' && activeOption) {
+                event.preventDefault();
+                selectOption(activeOption);
+                return;
+            }
+            if (event.key === 'Tab' && activeOption?.kind === 'operator') {
+                event.preventDefault();
+                selectOperator(activeOption.value);
+                return;
             }
         }
 
-        if (e.key === 'Enter') {
-            if (!dateSearchReadiness.isReady) {
-                e.preventDefault();
+        if (event.key === 'Enter') {
+            if (!queryReadiness.isReady || searchProps.isSearchingAi) {
+                event.preventDefault();
                 return;
             }
-            setFilters(f => ({ ...f, searchQuery: localValue }));
             searchProps.submitSearch(localValue);
         }
     };
 
     const clearSearch = () => {
         setLocalValue('');
-        setFilters(f => ({ ...f, searchQuery: '' }));
-        setSuggestions([]);
-        setActiveSuggestionIndex(-1);
+        setFilters(previous => ({ ...previous, searchQuery: '' }));
+        setActiveOptionIndex(-1);
+        setAreOptionsDismissed(false);
         searchProps.inputRef.current?.focus();
     };
 
+    const clearRecentSearches = () => {
+        setRecentSearches([]);
+        setActiveOptionIndex(-1);
+        searchProps.inputRef.current?.focus();
+    };
+
+    const handleFocusCapture = (event: React.FocusEvent<HTMLDivElement>) => {
+        const previousTarget = event.relatedTarget as Node | null;
+        if (!previousTarget || !event.currentTarget.contains(previousTarget)) {
+            setAreOptionsDismissed(false);
+            searchProps.onFocus();
+        }
+    };
+
+    const handleBlurCapture = (event: React.FocusEvent<HTMLDivElement>) => {
+        const nextTarget = event.relatedTarget as Node | null;
+        if (!nextTarget || !event.currentTarget.contains(nextTarget)) {
+            searchProps.onBlur();
+        }
+    };
+
+    const listLabel = options[0]?.kind === 'recent' ? 'Recent searches' : 'Search operator suggestions';
+    const accessibleName = searchProps.isAiSearchEnabled
+        ? `Ask ${APP_NAME} with AI`
+        : `Search in ${scopeName}`;
+    const describedBy = searchProps.isFocused
+        ? [queryIssue || statusMessage ? statusId : null, helperId].filter(Boolean).join(' ')
+        : undefined;
+
     return (
-        <div className={`relative w-full max-w-lg group flex items-center gap-2 transition-all duration-300 ${searchProps.isFocused ? 'z-[70] scale-105' : 'z-30'}`}>
-            <div className="relative flex-1">
-                <Search className={`absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 transition-colors ${searchProps.isSearchingAi ? 'text-amethyst-600 dark:text-amethyst-400 animate-pulse' : 'text-gray-400 dark:text-zinc-500 group-focus-within:text-sage-600 dark:group-focus-within:text-sage-400'}`} />
+        <div
+            className={`group flex items-center gap-2 ${searchProps.isFocused ? 'absolute left-6 right-6 top-1/2 max-w-lg -translate-y-1/2 z-[70]' : 'relative w-full max-w-lg z-30'}`}
+            onFocusCapture={handleFocusCapture}
+            onBlurCapture={handleBlurCapture}
+        >
+            <div className={`relative flex-1 rounded-xl transition-shadow duration-200 ${isStandardSearchPending ? 'shadow-[0_0_18px_rgba(139,174,124,0.24)] dark:shadow-[0_0_20px_rgba(139,174,124,0.18)]' : ''}`}>
+                {showLoadingIndicator ? (
+                    <LoaderCircle
+                        aria-hidden="true"
+                        className={`absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 animate-spin ${searchProps.isSearchingAi ? 'text-amethyst-600 dark:text-amethyst-400' : 'text-sage-600 dark:text-sage-400'}`}
+                    />
+                ) : (
+                    <Search aria-hidden="true" className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 transition-colors text-gray-400 dark:text-zinc-500 group-focus-within:text-sage-600 dark:group-focus-within:text-sage-400" />
+                )}
                 <input
                     ref={searchProps.inputRef}
                     type="text"
-                    placeholder={searchProps.isAiSearchEnabled ? `Ask ${APP_NAME}...` : "Search prompt..."}
+                    role="combobox"
+                    aria-label={accessibleName}
+                    aria-autocomplete="list"
+                    aria-expanded={searchProps.isFocused && options.length > 0}
+                    aria-controls={searchProps.isFocused && options.length > 0 ? listboxId : undefined}
+                    aria-activedescendant={searchProps.isFocused ? activeOption?.id : undefined}
+                    aria-describedby={describedBy || undefined}
+                    aria-invalid={queryIssue?.kind === 'invalid' ? true : undefined}
+                    aria-busy={showLoadingIndicator}
+                    readOnly={searchProps.isSearchingAi}
+                    placeholder={searchProps.isAiSearchEnabled ? `Ask ${APP_NAME}...` : `Search in ${scopeName}...`}
                     className={`w-full bg-gray-100 dark:bg-zinc-800/50 border rounded-xl py-2 pl-10 pr-10 text-sm focus:outline-none transition-all text-gray-900 dark:text-gray-100 placeholder-gray-500 ${searchProps.isAiSearchEnabled ? 'border-amethyst-300 dark:border-amethyst-800 focus:border-amethyst-500/50 focus:ring-1 focus:ring-amethyst-500/30' : 'border-gray-200 dark:border-white/10 focus:border-sage-500/50 focus:ring-1 focus:ring-sage-500/30'}`}
                     value={localValue}
                     onChange={handleSearchChange}
-                    onFocus={searchProps.onFocus}
-                    onBlur={searchProps.onBlur}
                     onKeyDown={handleKeyDown}
                     autoComplete="off"
                 />
-                {localValue && (
+                {localValue && !searchProps.isSearchingAi ? (
                     <button
+                        type="button"
+                        aria-label="Clear Search"
                         onClick={clearSearch}
-                        className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-900 dark:text-zinc-500 dark:hover:text-white"
+                        className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-gray-400 hover:text-gray-900 dark:text-zinc-500 dark:hover:text-white"
                     >
-                        <X className="w-3.5 h-3.5" />
+                        <X aria-hidden="true" className="w-3.5 h-3.5" />
                     </button>
-                )}
+                ) : null}
 
-                {searchProps.isFocused && (
-                    <div className="absolute top-full left-0 right-0 mt-2 bg-white dark:bg-zinc-900 border border-gray-200 dark:border-white/10 rounded-xl shadow-2xl z-50 overflow-hidden animate-in fade-in slide-in-from-top-2 duration-200">
-                        {dateSearchHint && (
-                            <div role="status" className="px-4 py-2 text-xs text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-950/30 border-b border-amber-100 dark:border-amber-900/40">
-                                {dateSearchHint}
-                            </div>
-                        )}
-                        {suggestions.length > 0 && (
-                            <div className="py-2">
-                                <div className="px-4 py-1 text-[10px] font-bold text-gray-400 uppercase tracking-wider">Suggestions</div>
-                                {suggestions.map((s, idx) => (
-                                    <button
-                                        key={s}
-                                        onMouseDown={(e) => {
-                                            e.preventDefault();
-                                            selectSuggestion(idx);
-                                        }}
-                                        className={`w-full text-left px-4 py-2 text-sm transition-colors ${activeSuggestionIndex === idx ? 'bg-sage-100 dark:bg-sage-900/40 text-sage-900 dark:text-sage-100' : 'text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-white/5'}`}
-                                    >
-                                        {s}
-                                    </button>
-                                ))}
-                            </div>
-                        )}
-                        {!localValue && recentSearches.length > 0 && (
-                            <div className="py-2 border-t border-gray-100 dark:border-white/5 first:border-0">
-                                <div className="px-4 py-1 text-[10px] font-bold text-gray-400 uppercase tracking-wider flex justify-between items-center">
-                                    <span>Recent Searches</span>
-                                    <button
-                                        onMouseDown={(e) => {
-                                            e.preventDefault();
-                                            setRecentSearches([]);
-                                        }}
-                                        className="hover:text-red-500 transition-colors uppercase"
-                                    >
-                                        Clear
-                                    </button>
-                                </div>
-                                {recentSearches.map(s => (
-                                    <button
-                                        key={s}
-                                        onMouseDown={(e) => {
-                                            e.preventDefault();
-                                            setFilters(f => ({ ...f, searchQuery: s }));
-                                            setTimeout(() => searchProps.submitSearch(s), 0);
-                                        }}
-                                        className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-white/5 transition-colors flex items-center gap-2"
-                                    >
-                                        <History className="w-3 h-3 text-gray-400" /> {s}
-                                    </button>
-                                ))}
-                            </div>
-                        )}
-                    </div>
-                )}
+                {searchProps.isFocused ? (
+                    <React.Suspense fallback={null}>
+                        <SearchBarPopover
+                            activeOptionIndex={activeOptionIndex}
+                            helperId={helperId}
+                            helperText={triggerGuidance}
+                            listboxId={listboxId}
+                            listLabel={listLabel}
+                            options={options}
+                            queryIssue={queryIssue}
+                            statusId={statusId}
+                            statusMessage={statusMessage}
+                            onClearRecentSearches={clearRecentSearches}
+                            onOpenSearchHelp={searchProps.onOpenSearchHelp}
+                            onSelectOption={selectOption}
+                        />
+                    </React.Suspense>
+                ) : null}
             </div>
-            <button
+            <TooltipButton
+                label={searchProps.isAiSearchEnabled ? 'Disable AI Search' : 'Enable AI Search'}
+                content={searchProps.isAiSearchEnabled ? 'Return to standard library search.' : 'Use natural-language AI search.'}
+                aria-pressed={searchProps.isAiSearchEnabled}
+                disabled={searchProps.isSearchingAi}
                 onClick={searchProps.toggleAiSearch}
-                className={`p-2 rounded-xl transition-all border ${searchProps.isAiSearchEnabled ? 'bg-amethyst-100 dark:bg-amethyst-600/20 border-amethyst-500/50 text-amethyst-600 dark:text-amethyst-300 shadow-[0_0_15px_rgba(139,92,246,0.2)]' : 'bg-gray-100 dark:bg-zinc-800/50 border-gray-200 dark:border-white/10 text-gray-500 dark:text-zinc-500 hover:text-sage-600 dark:hover:text-sage-400 hover:border-gray-300 dark:hover:border-white/10'}`}
-                title={searchProps.isAiSearchEnabled ? "Disable AI Search" : "Enable AI Search"}
+                className={`p-2 rounded-xl transition-all border disabled:cursor-wait disabled:opacity-60 ${searchProps.isAiSearchEnabled ? 'bg-amethyst-100 dark:bg-amethyst-600/20 border-amethyst-500/50 text-amethyst-600 dark:text-amethyst-300 shadow-[0_0_15px_rgba(139,92,246,0.2)]' : 'bg-gray-100 dark:bg-zinc-800/50 border-gray-200 dark:border-white/10 text-gray-500 dark:text-zinc-500 hover:text-sage-600 dark:hover:text-sage-400 hover:border-gray-300 dark:hover:border-white/10'}`}
             >
-                <Sparkles className="w-4 h-4" />
-            </button>
+                <Sparkles aria-hidden="true" className="w-4 h-4" />
+            </TooltipButton>
         </div>
     );
 });

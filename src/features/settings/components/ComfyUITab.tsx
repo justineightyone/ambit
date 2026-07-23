@@ -1,8 +1,9 @@
 import * as React from 'react';
 import { useState } from 'react';
-import { Workflow, Folder, Info, FolderSearch, Loader2, CheckCircle2, XCircle, Plus, FolderOpen } from 'lucide-react';
+import { Workflow, Folder, Info, CheckCircle2, XCircle, Plus, FolderOpen } from 'lucide-react';
 import { AppSettings, GeneratorTool } from '../../../types';
 import { useToast } from '../../../hooks/useToast';
+import { TooltipButton } from '../../../components/ui/InfoTooltip';
 
 interface TabProps {
     settings: AppSettings;
@@ -11,14 +12,12 @@ interface TabProps {
 
 export const ComfyUITab: React.FC<TabProps> = React.memo(({ settings, setSettings }) => {
     const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null);
-    const [isScanning, setIsScanning] = useState(false);
     const { addToast } = useToast();
 
-    const handleLinkFolder = async () => {
-        if (!settings.comfyUiPath) return;
-
+    const handleLinkFolder = () => {
+        const comfyUiPath = settings.comfyUiPath!;
         // Check if already linked
-        const normalizedPath = settings.comfyUiPath.replace(/\\/g, '/');
+        const normalizedPath = comfyUiPath.replace(/\\/g, '/');
         const exists = settings.monitoredFolders.some(f => f.path.replace(/\\/g, '/') === normalizedPath);
 
         if (exists) {
@@ -28,7 +27,6 @@ export const ComfyUITab: React.FC<TabProps> = React.memo(({ settings, setSetting
         }
 
         setTestResult(null);
-        setIsScanning(true);
 
         try {
             // Validate path exists using Tauri fs or just assume valid if selected via dialog
@@ -36,7 +34,7 @@ export const ComfyUITab: React.FC<TabProps> = React.memo(({ settings, setSetting
 
             const newFolder = {
                 id: `comfyui_${Date.now()}`,
-                path: settings.comfyUiPath,
+                path: comfyUiPath,
                 isActive: true,
                 imageCount: 0, // Will be updated by scanner
                 variant: GeneratorTool.COMFYUI
@@ -53,8 +51,6 @@ export const ComfyUITab: React.FC<TabProps> = React.memo(({ settings, setSetting
             console.error(e);
             setTestResult({ success: false, message: "Failed to link folder." });
             addToast("Failed to link folder", "error");
-        } finally {
-            setIsScanning(false);
         }
     };
 
@@ -83,9 +79,9 @@ export const ComfyUITab: React.FC<TabProps> = React.memo(({ settings, setSetting
                                     />
                                     <Folder className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 group-focus-within:text-sage-500 transition-colors" />
                                 </div>
-                                <button
-                                    type="button"
-                                    title="Browse"
+                                <TooltipButton
+                                    label="Browse for ComfyUI Output Folder"
+                                    content="Browse for ComfyUI Output Folder"
                                     onClick={async () => {
                                         try {
                                             const { open } = await import('@tauri-apps/plugin-dialog');
@@ -99,7 +95,7 @@ export const ComfyUITab: React.FC<TabProps> = React.memo(({ settings, setSetting
                                     className="aspect-square h-[42px] flex items-center justify-center bg-gray-100 dark:bg-white/10 text-gray-600 dark:text-gray-300 rounded-xl hover:bg-gray-200 dark:hover:bg-white/20 active:scale-95 transition-all"
                                 >
                                     <FolderOpen className="w-5 h-5" />
-                                </button>
+                                </TooltipButton>
                             </div>
                             <p className="text-[10px] text-gray-500 mt-3 flex items-center gap-1.5 opacity-80 px-1">
                                 <Info className="w-3 h-3" /> Select the 'output' folder where ComfyUI saves generated images.
@@ -111,23 +107,14 @@ export const ComfyUITab: React.FC<TabProps> = React.memo(({ settings, setSetting
                         <div className="flex items-center justify-between">
                             <button
                                 onClick={handleLinkFolder}
-                                disabled={isScanning || !settings.comfyUiPath}
+                                disabled={!settings.comfyUiPath}
                                 className={`px-8 py-3 rounded-xl text-sm font-black tracking-wide transition-all flex items-center gap-2.5 ${!settings.comfyUiPath
                                     ? 'bg-gray-100 dark:bg-white/5 text-gray-400 cursor-not-allowed'
                                     : 'bg-sage-600 hover:bg-sage-500 text-white shadow-xl shadow-sage-500/20 active:scale-95'
                                     }`}
                             >
-                                {isScanning ? (
-                                    <>
-                                        <Loader2 className="w-4 h-4 animate-spin" />
-                                        Linking...
-                                    </>
-                                ) : (
-                                    <>
-                                        <Plus className="w-4 h-4" />
-                                        Link Output Folder
-                                    </>
-                                )}
+                                <Plus className="w-4 h-4" />
+                                Link Output Folder
                             </button>
 
                             {testResult && (

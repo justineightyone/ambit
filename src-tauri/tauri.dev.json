@@ -1,11 +1,11 @@
 {
     "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
     "productName": "Ambit (Dev)",
-    "version": "0.8.0",
+    "version": "0.9.0",
     "identifier": "com.ambit.dev",
     "build": {
         "frontendDist": "../dist",
-        "devUrl": "http://localhost:1421",
+        "devUrl": "http://localhost:1422",
         "beforeDevCommand": "pnpm run dev",
         "beforeBuildCommand": "corepack pnpm run build"
     },

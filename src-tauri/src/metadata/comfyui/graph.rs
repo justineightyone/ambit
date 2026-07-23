@@ -1,6 +1,6 @@
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::cmp::Ordering;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use super::workflow_normalizer::normalize_workflow;
 
@@ -8,6 +8,26 @@ use super::workflow_normalizer::normalize_workflow;
 pub struct ComfyGraph {
     pub(crate) nodes: HashMap<String, Value>,
     pub(crate) broadcasters: Vec<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum InputConnection {
+    Connected(String),
+    DeclaredUnresolved,
+    Unconnected,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct InputSource {
+    pub(crate) node_id: String,
+    pub(crate) output_slot: Option<usize>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum InputSourceConnection {
+    Connected(InputSource),
+    DeclaredUnresolved,
+    Unconnected,
 }
 
 impl ComfyGraph {
@@ -46,12 +66,20 @@ impl ComfyGraph {
                         for edge in &normalized.edges {
                             incoming.insert(
                                 (edge.target_id.clone(), edge.target_slot),
-                                (edge.source_id.clone(), edge.link_type.clone()),
+                                (
+                                    edge.source_id.clone(),
+                                    edge.source_slot,
+                                    edge.link_type.clone(),
+                                ),
                             );
                             if let Some(link_id) = &edge.link_id {
                                 incoming_by_link.insert(
                                     (edge.target_id.clone(), link_id.clone()),
-                                    (edge.source_id.clone(), edge.link_type.clone()),
+                                    (
+                                        edge.source_id.clone(),
+                                        edge.source_slot,
+                                        edge.link_type.clone(),
+                                    ),
                                 );
                             }
                         }
@@ -71,10 +99,12 @@ impl ComfyGraph {
                             else {
                                 continue;
                             };
-                            if let Some((source_id, link_type)) = incoming.get(&(id, 0)) {
+                            if let Some((source_id, source_slot, link_type)) =
+                                incoming.get(&(id, 0))
+                            {
                                 var_map.insert(
                                     var_name.to_string(),
-                                    (source_id.clone(), link_type.clone()),
+                                    (source_id.clone(), *source_slot, link_type.clone()),
                                 );
                             }
                         }
@@ -85,6 +115,7 @@ impl ComfyGraph {
                             };
                             let node_type = get_node_type(&node).to_string();
                             let mut resolved = serde_json::Map::new();
+                            let mut resolved_sources = serde_json::Map::new();
 
                             if let Some(inputs) = node.get("inputs").and_then(Value::as_array) {
                                 for (slot, input) in inputs.iter().enumerate() {
@@ -99,12 +130,21 @@ impl ComfyGraph {
                                             incoming_by_link.get(&(id.clone(), link_id))
                                         })
                                         .or_else(|| incoming.get(&(id.clone(), slot)));
-                                    if let Some((source_id, _)) = linked_source {
+                                    if let Some((source_id, source_slot, _)) = linked_source {
                                         let value = resolved
                                             .entry(name.to_string())
                                             .or_insert(Value::Array(Vec::new()));
                                         if let Some(values) = value.as_array_mut() {
                                             values.push(Value::String(source_id.clone()));
+                                        }
+                                        let value = resolved_sources
+                                            .entry(name.to_string())
+                                            .or_insert(Value::Array(Vec::new()));
+                                        if let Some(values) = value.as_array_mut() {
+                                            values.push(resolved_source_value(
+                                                source_id,
+                                                *source_slot,
+                                            ));
                                         }
                                     }
                                 }
@@ -116,7 +156,9 @@ impl ComfyGraph {
                                     .and_then(|value| value.get(0))
                                     .and_then(Value::as_str)
                                 {
-                                    if let Some((source_id, link_type)) = var_map.get(var_name) {
+                                    if let Some((source_id, source_slot, link_type)) =
+                                        var_map.get(var_name)
+                                    {
                                         resolved.insert(
                                             var_name.to_string(),
                                             Value::String(source_id.clone()),
@@ -131,6 +173,14 @@ impl ComfyGraph {
                                                 Value::String(source_id.clone()),
                                             );
                                         }
+                                        let source = resolved_source_value(source_id, *source_slot);
+                                        resolved_sources
+                                            .insert(var_name.to_string(), source.clone());
+                                        resolved_sources
+                                            .insert("source".to_string(), source.clone());
+                                        if !link_type.is_empty() && link_type != "*" {
+                                            resolved_sources.insert(link_type.clone(), source);
+                                        }
                                     }
                                 }
                             }
@@ -139,6 +189,10 @@ impl ComfyGraph {
                                 object.insert(
                                     "_resolved_inputs".to_string(),
                                     Value::Object(resolved),
+                                );
+                                object.insert(
+                                    "_resolved_sources".to_string(),
+                                    Value::Object(resolved_sources),
                                 );
                             }
                             nodes_map.insert(id, node);
@@ -185,6 +239,134 @@ pub(crate) fn compare_node_ids(left_id: &str, right_id: &str) -> Ordering {
 
 pub fn get_node_input_link(node: &Value, key: &str) -> Option<String> {
     get_node_input_links(node, key).into_iter().next()
+}
+
+pub(crate) fn get_input_connection(node: &Value, key: &str) -> InputConnection {
+    match get_input_source(node, key) {
+        InputSourceConnection::Connected(source) => InputConnection::Connected(source.node_id),
+        InputSourceConnection::DeclaredUnresolved => InputConnection::DeclaredUnresolved,
+        InputSourceConnection::Unconnected => InputConnection::Unconnected,
+    }
+}
+
+pub(crate) fn get_input_source(node: &Value, key: &str) -> InputSourceConnection {
+    if let Some(value) = node
+        .get("_resolved_sources")
+        .and_then(|inputs| inputs.get(key))
+    {
+        if let Some(source) = resolved_input_source(value) {
+            return InputSourceConnection::Connected(source);
+        }
+        if let Some(source) = value
+            .as_array()
+            .and_then(|sources| sources.first())
+            .and_then(resolved_input_source)
+        {
+            return InputSourceConnection::Connected(source);
+        }
+        return InputSourceConnection::DeclaredUnresolved;
+    }
+
+    if let Some(value) = node
+        .get("_resolved_inputs")
+        .and_then(|inputs| inputs.get(key))
+    {
+        if let Some(source_id) = value.as_str() {
+            return InputSourceConnection::Connected(InputSource {
+                node_id: source_id.to_string(),
+                output_slot: None,
+            });
+        }
+        if let Some(source_id) = value
+            .as_array()
+            .and_then(|sources| sources.first())
+            .and_then(Value::as_str)
+        {
+            return InputSourceConnection::Connected(InputSource {
+                node_id: source_id.to_string(),
+                output_slot: None,
+            });
+        }
+        return InputSourceConnection::DeclaredUnresolved;
+    }
+
+    if let Some(value) = node
+        .get("inputs")
+        .and_then(Value::as_object)
+        .and_then(|inputs| inputs.get(key))
+    {
+        if let Some(link) = value.as_array() {
+            if link.len() >= 2 && link[1].is_number() {
+                if let Some(source_id) = link[0]
+                    .as_str()
+                    .map(str::to_string)
+                    .or_else(|| link[0].as_i64().map(|source_id| source_id.to_string()))
+                    .or_else(|| link[0].as_u64().map(|source_id| source_id.to_string()))
+                {
+                    return InputSourceConnection::Connected(InputSource {
+                        node_id: source_id,
+                        output_slot: value_as_usize(&link[1]),
+                    });
+                }
+                return InputSourceConnection::DeclaredUnresolved;
+            }
+        }
+    }
+
+    if node
+        .get("inputs")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .any(|input| {
+            input.get("name").and_then(Value::as_str) == Some(key)
+                && input.get("link").is_some_and(|link| !link.is_null())
+        })
+    {
+        return InputSourceConnection::DeclaredUnresolved;
+    }
+
+    InputSourceConnection::Unconnected
+}
+
+fn resolved_source_value(source_id: &str, source_slot: usize) -> Value {
+    json!({
+        "node_id": source_id,
+        "output_slot": source_slot,
+    })
+}
+
+fn resolved_input_source(value: &Value) -> Option<InputSource> {
+    let object = value.as_object()?;
+    Some(InputSource {
+        node_id: object.get("node_id").and_then(value_as_id)?,
+        output_slot: object.get("output_slot").and_then(value_as_usize),
+    })
+}
+
+fn value_as_usize(value: &Value) -> Option<usize> {
+    value
+        .as_u64()
+        .and_then(|value| usize::try_from(value).ok())
+        .or_else(|| value.as_i64().and_then(|value| usize::try_from(value).ok()))
+}
+
+pub(crate) fn get_strict_source_id(node: &Value, key: &str) -> Option<String> {
+    match get_input_connection(node, key) {
+        InputConnection::Connected(source_id) => Some(source_id),
+        InputConnection::DeclaredUnresolved | InputConnection::Unconnected => None,
+    }
+}
+
+pub(crate) fn get_reroute_source_id(node: &Value) -> Option<String> {
+    for key in ["", "value", "input", "any"] {
+        match get_input_connection(node, key) {
+            InputConnection::Connected(source_id) => return Some(source_id),
+            InputConnection::DeclaredUnresolved => return None,
+            InputConnection::Unconnected => {}
+        }
+    }
+    None
 }
 
 pub(crate) fn get_node_input_links(node: &Value, key: &str) -> Vec<String> {
@@ -290,6 +472,19 @@ pub fn get_switch_branch_input(
     })
 }
 
+pub(crate) fn get_switch_branch_input_strict(
+    graph: &ComfyGraph,
+    node: &Value,
+) -> Option<&'static str> {
+    resolve_bool_input_strict(graph, node, "switch").map(|enabled| {
+        if enabled {
+            "on_true"
+        } else {
+            "on_false"
+        }
+    })
+}
+
 pub fn get_switch_branch_source(graph: &ComfyGraph, node_id: &str, node: &Value) -> Option<String> {
     let branch = get_switch_branch_input(graph, node_id, node)?;
     get_source_id(graph, node_id, branch)
@@ -300,23 +495,96 @@ fn resolve_bool_input(graph: &ComfyGraph, node_id: &str, node: &Value, key: &str
         return Some(value);
     }
 
-    if let Some(source_id) = get_source_id(graph, node_id, key) {
-        if let Some(source) = graph.get_node(&source_id) {
-            for source_key in ["value", "bool", "BOOLEAN", "switch"] {
-                if let Some(value) = get_node_param(source, source_key).and_then(value_as_bool) {
-                    return Some(value);
-                }
-            }
+    let source_id = get_source_id(graph, node_id, key)?;
+    resolve_linked_bool(graph, &source_id, &mut HashSet::new(), 0)
+}
 
-            if let Some(arr) = source.get("widgets_values").and_then(|v| v.as_array()) {
-                if let Some(value) = arr.first().and_then(value_as_bool) {
-                    return Some(value);
-                }
-            }
+fn resolve_bool_input_strict(graph: &ComfyGraph, node: &Value, key: &str) -> Option<bool> {
+    match get_input_connection(node, key) {
+        InputConnection::Connected(source_id) => {
+            resolve_linked_bool_strict(graph, &source_id, &mut HashSet::new(), 0)
+        }
+        InputConnection::DeclaredUnresolved => None,
+        InputConnection::Unconnected => get_node_param(node, key).and_then(value_as_bool),
+    }
+}
+
+fn resolve_linked_bool(
+    graph: &ComfyGraph,
+    node_id: &str,
+    visited: &mut HashSet<String>,
+    depth: usize,
+) -> Option<bool> {
+    if depth > 16 || !visited.insert(node_id.to_string()) {
+        return None;
+    }
+
+    let node = graph.get_node(node_id)?;
+    for key in ["value", "bool", "BOOLEAN", "switch"] {
+        if let Some(value) = get_node_param(node, key).and_then(value_as_bool) {
+            return Some(value);
         }
     }
 
+    if let Some(value) = node
+        .get("widgets_values")
+        .and_then(Value::as_array)
+        .and_then(|values| values.first())
+        .and_then(value_as_bool)
+    {
+        return Some(value);
+    }
+
+    if get_node_type(node) == "Reroute" {
+        let source_id = ["", "value", "input", "any"]
+            .into_iter()
+            .find_map(|key| get_source_id(graph, node_id, key))?;
+        return resolve_linked_bool(graph, &source_id, visited, depth + 1);
+    }
+
     None
+}
+
+fn resolve_linked_bool_strict(
+    graph: &ComfyGraph,
+    node_id: &str,
+    visited: &mut HashSet<String>,
+    depth: usize,
+) -> Option<bool> {
+    if depth > 16 || !visited.insert(node_id.to_string()) {
+        return None;
+    }
+
+    let node = graph.get_node(node_id)?;
+    let is_reroute = get_node_type(node) == "Reroute";
+    let input_keys: &[&str] = if is_reroute {
+        &["", "value", "input", "any"]
+    } else {
+        &["value", "bool", "BOOLEAN", "switch"]
+    };
+    for key in input_keys {
+        match get_input_connection(node, key) {
+            InputConnection::Connected(source_id) => {
+                return resolve_linked_bool_strict(graph, &source_id, visited, depth + 1);
+            }
+            InputConnection::DeclaredUnresolved => return None,
+            InputConnection::Unconnected => {}
+        }
+    }
+    if is_reroute {
+        return None;
+    }
+
+    for key in ["value", "bool", "BOOLEAN", "switch"] {
+        if let Some(value) = get_node_param(node, key).and_then(value_as_bool) {
+            return Some(value);
+        }
+    }
+
+    node.get("widgets_values")
+        .and_then(Value::as_array)
+        .and_then(|values| values.first())
+        .and_then(value_as_bool)
 }
 
 fn value_as_bool(value: &Value) -> Option<bool> {
@@ -470,6 +738,53 @@ pub fn get_node_param<'a>(node: &'a Value, key: &str) -> Option<&'a Value> {
             }
         }
 
+        if t == "CLIPTextEncode" && key == "text" {
+            return arr.first();
+        }
+
+        if t == "TextEncodeBooguEdit" && key == "prompt" {
+            return arr.first();
+        }
+
+        if t == "StringReplace" {
+            match key {
+                "string" => return arr.first(),
+                "find" => return arr.get(1),
+                "replace" => return arr.get(2),
+                _ => {}
+            }
+        }
+
+        if t == "JsonExtractString" {
+            match key {
+                "json_string" => return arr.first(),
+                "key" => return arr.get(1),
+                _ => {}
+            }
+        }
+
+        if t == "RegexExtract" {
+            match key {
+                "string" => return arr.first(),
+                "regex_pattern" => return arr.get(1),
+                "mode" => return arr.get(2),
+                "case_insensitive" => return arr.get(3),
+                "multiline" => return arr.get(4),
+                "dotall" => return arr.get(5),
+                "group_index" => return arr.get(6),
+                _ => {}
+            }
+        }
+
+        if t == "StringConcatenate" {
+            match key {
+                "string_a" => return arr.first(),
+                "string_b" => return arr.get(1),
+                "delimiter" => return arr.get(2),
+                _ => {}
+            }
+        }
+
         if t == "KSampler" {
             match key {
                 "seed" | "noise_seed" => return arr.get(0),
@@ -506,6 +821,54 @@ pub fn get_node_param<'a>(node: &'a Value, key: &str) -> Option<&'a Value> {
         if t == "FluxGuidance" {
             match key {
                 "guidance" => return arr.first(),
+                _ => {}
+            }
+        }
+
+        if t == "CFGGuider" && key == "cfg" {
+            return arr.first();
+        }
+
+        if t == "DualCFGGuider" && key == "cfg_conds" {
+            return arr.first();
+        }
+
+        if t == "DualModelGuider" && key == "cfg" {
+            return arr.first();
+        }
+
+        if t == "BasicScheduler" {
+            match key {
+                "scheduler" => return arr.first(),
+                "steps" => return arr.get(1),
+                "denoise" => return arr.get(2),
+                _ => {}
+            }
+        }
+
+        if t == "KSamplerSelect" && key == "sampler_name" {
+            return arr.first();
+        }
+
+        if t == "SamplerCustom" {
+            match key {
+                "noise_seed" => return arr.get(1),
+                "cfg" => return arr.get(3),
+                _ => {}
+            }
+        }
+
+        if t == "BetaSamplingScheduler" && key == "steps" {
+            return arr.first();
+        }
+
+        if t == "Ideogram4Scheduler" {
+            match key {
+                "steps" => return arr.first(),
+                "width" => return arr.get(1),
+                "height" => return arr.get(2),
+                "mu" => return arr.get(3),
+                "std" => return arr.get(4),
                 _ => {}
             }
         }

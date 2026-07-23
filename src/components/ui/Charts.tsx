@@ -85,7 +85,7 @@ export const StatsDashboard: React.FC<ChartsProps> = ({ images, onFilter }) => {
                                 <h4 className="text-sm font-bold text-sage-800 dark:text-sage-200 mb-1">Tip of the Day</h4>
                                 <p className="text-sm text-sage-600 dark:text-sage-300">{randomTip}</p>
                             </div>
-                            <button onClick={() => setShowTip(false)} className="absolute top-2 right-2 p-1 text-sage-400 hover:text-sage-600 dark:hover:text-sage-200">
+                            <button type="button" aria-label="Dismiss Tip" onClick={() => setShowTip(false)} className="absolute top-2 right-2 p-1 text-sage-400 hover:text-sage-600 dark:hover:text-sage-200">
                                 <X className="w-4 h-4" />
                             </button>
                         </div>
@@ -100,7 +100,7 @@ export const StatsDashboard: React.FC<ChartsProps> = ({ images, onFilter }) => {
                         />
                         <StatCard
                             label="Avg. Steps"
-                            value={avgSteps}
+                            value={avgSteps > 0 ? avgSteps : '—'}
                             isLoading={isStatsSummaryLoading}
                             loadingText="Computing generation summary"
                         />
@@ -211,12 +211,12 @@ export const StatsDashboard: React.FC<ChartsProps> = ({ images, onFilter }) => {
 const StatCard = ({
     label,
     value,
-    isLoading = false,
+    isLoading,
     loadingText
 }: {
     label: string;
     value: number | string;
-    isLoading?: boolean;
+    isLoading: boolean;
     loadingText?: string;
 }) => (
     <div className="bg-white dark:bg-slate-900 border border-gray-200 dark:border-white/10 p-4 rounded-lg shadow-sm">

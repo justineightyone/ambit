@@ -25,7 +25,7 @@ import {
 interface ImageViewerProps {
     image: AIImage;
     availableTags?: string[];
-    onAddToCollection: (imageId: string, collectionId: string) => void;
+    onSetCollectionMembership: (imageId: string, collectionId: string, shouldBelong: boolean) => Promise<boolean>;
     onClose: () => void;
     onNext: () => void;
     onPrev: () => void;
@@ -42,6 +42,7 @@ interface ImageViewerProps {
     onOpenSettings: () => void;
     onDelete?: (id: string) => void;
     isOpen: boolean;
+    isShortcutBlocked?: boolean;
     isSidebarOpen?: boolean;
     onToggleSidebar?: () => void;
     searchHighlights?: PromptHighlightSpec;
@@ -106,7 +107,7 @@ const ViewerStatusHud: React.FC<ViewerStatusHudProps> = ({ isFavorite, isPinned,
 export const ImageViewer: React.FC<ImageViewerProps> = ({
     image,
     availableTags = [],
-    onAddToCollection,
+    onSetCollectionMembership,
     onClose,
     onNext,
     onPrev,
@@ -123,11 +124,15 @@ export const ImageViewer: React.FC<ImageViewerProps> = ({
     onOpenSettings,
     onDelete,
     isOpen,
+    isShortcutBlocked = false,
     isSidebarOpen = true,
     onToggleSidebar,
     searchHighlights
 }) => {
     const settings = useSettingsStore(s => s.settings);
+    const privacyExposureBlocked = useSettingsStore(state => (
+        state.privacyEnabled && state.privacyMaskIndexStatus !== 'ready'
+    ));
     const collections = useCollectionStore(s => s.collections);
     const [fullImage, setFullImage] = useState<AIImage | null>(null);
     const [isLoadingFull, setIsLoadingFull] = useState(false);
@@ -142,6 +147,11 @@ export const ImageViewer: React.FC<ImageViewerProps> = ({
 
     // Reset local version and/or fetch full metadata when image or version changes
     useEffect(() => {
+        if (privacyExposureBlocked) {
+            setFullImage(null);
+            setIsLoadingFull(false);
+            return;
+        }
         const targetId = activeVersionId || image.id;
         // Optimization: Only clear if it's a completely different image, 
         // keep old one as placeholder if it's just a version switch? 
@@ -153,7 +163,7 @@ export const ImageViewer: React.FC<ImageViewerProps> = ({
             if (res) setFullImage(res);
             setIsLoadingFull(false);
         }).catch(() => setIsLoadingFull(false));
-    }, [image.id, activeVersionId]);
+    }, [image.id, activeVersionId, privacyExposureBlocked]);
 
     const versions = useMemo(() => {
         if (!image.stack || image.stack.length === 0) return [];
@@ -194,7 +204,9 @@ export const ImageViewer: React.FC<ImageViewerProps> = ({
 
     // --- Hooks ---
     const { scale, position, isDragging, resetZoom, zoomIn, zoomOut, handlers } = useZoomPan();
-    const { palette, isLoading: isPaletteLoading } = usePalette(displayImage.url);
+    const { palette, isLoading: isPaletteLoading } = usePalette(
+        privacyExposureBlocked ? null : displayImage.url
+    );
     const { addToast } = useToast();
     const ai = useImageAI({
         aiModel: getEffectiveAiModel(settings),
@@ -247,7 +259,7 @@ export const ImageViewer: React.FC<ImageViewerProps> = ({
     useEffect(() => {
         revealStatusHud();
         return () => {
-            if (statusHudTimeoutRef.current) clearTimeout(statusHudTimeoutRef.current);
+            clearTimeout(statusHudTimeoutRef.current as ReturnType<typeof setTimeout>);
         };
     }, [displayImage.id, revealStatusHud]);
 
@@ -279,7 +291,29 @@ export const ImageViewer: React.FC<ImageViewerProps> = ({
             // Don't trigger shortcuts if user is typing in a field
             if (e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLInputElement) return;
 
+            if (ai.modalOpen) {
+                if (e.key === 'Escape') {
+                    e.preventDefault();
+                    ai.closeModal();
+                }
+                return;
+            }
+
+            if (isShortcutBlocked) return;
+
             const key = e.key.toLowerCase();
+
+            if (e.key === ' ') {
+                e.preventDefault();
+                onClose();
+                return;
+            }
+
+            if (e.key === 'Delete' || e.key === 'Backspace') {
+                e.preventDefault();
+                onDelete?.(displayImage.id);
+                return;
+            }
 
             // Navigation
             if (e.key === 'ArrowRight') onNext();
@@ -291,17 +325,22 @@ export const ImageViewer: React.FC<ImageViewerProps> = ({
             if (key === 'i') onToggleSidebar?.();
 
             if (e.key === 'Escape') {
-                if (ai.modalOpen) ai.closeModal();
-                else if (isTheaterMode) setIsTheaterMode(false);
+                if (isTheaterMode) setIsTheaterMode(false);
                 else onClose();
             }
             if (key === 'z') setIsTheaterMode(p => !p);
         };
         window.addEventListener('keydown', handleKeyDown);
         return () => window.removeEventListener('keydown', handleKeyDown);
-    }, [isOpen, ai.modalOpen, isTheaterMode, onNext, onPrev, handleToggleFavorite, handleTogglePin, onToggleSidebar, onClose]);
+    }, [isOpen, ai.modalOpen, ai.closeModal, isShortcutBlocked, isTheaterMode, displayImage.id, onNext, onPrev, handleToggleFavorite, handleTogglePin, onToggleSidebar, onDelete, onClose]);
 
-    if (!isOpen) return null;
+    useEffect(() => {
+        if (isOpen && privacyExposureBlocked) onClose();
+    }, [isOpen, onClose, privacyExposureBlocked]);
+
+    if (!isOpen || privacyExposureBlocked) return null;
+
+    const isSidebarVisible = isSidebarOpen && !isTheaterMode;
 
     const handleCopyImage = async () => {
         try {
@@ -396,7 +435,11 @@ export const ImageViewer: React.FC<ImageViewerProps> = ({
             </div>
 
             {/* Right Area: Sidebar */}
-            <div className={`h-full z-30 transition-all duration-500 ease-spring overflow-hidden ${isSidebarOpen && !isTheaterMode ? 'w-[420px] opacity-100 translate-x-0' : 'w-0 opacity-0 translate-x-20'}`}>
+            <div
+                aria-hidden={!isSidebarVisible}
+                inert={isSidebarVisible ? undefined : true}
+                className={`h-full z-30 transition-all duration-500 ease-spring overflow-hidden ${isSidebarVisible ? 'w-[420px] opacity-100 translate-x-0' : 'w-0 opacity-0 translate-x-20'}`}
+            >
                 <MetadataSidebar
                     image={displayImage} // Pass active version
                     activeTab={activeTab}
@@ -414,7 +457,7 @@ export const ImageViewer: React.FC<ImageViewerProps> = ({
                     onUpdateNegativePrompt={(id, np) => onUpdateNegativePrompt?.(id, np)}
                     onUpdateModel={(id, m) => onUpdateModel?.(id, m)}
                     onUpdateTool={(id, t) => onUpdateTool?.(id, t)}
-                    onAddToCollection={onAddToCollection}
+                    onSetCollectionMembership={onSetCollectionMembership}
                     onSearch={onSearch}
                     onClose={onClose}
                     onRecoverMetadata={onRecoverMetadata}

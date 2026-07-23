@@ -1,6 +1,6 @@
 import * as React from 'react';
 import { Check, Filter, ExternalLink, FolderOpen, Sliders, Puzzle, Save, FolderSearch, Images, HardDrive, Layers3, type LucideIcon } from 'lucide-react';
-import { AIImage, FilterState } from '../../../types';
+import { AIImage, FilterState, type SmartCollection } from '../../../types';
 import { useSearch } from '../../../contexts/SearchContext';
 import { useCollections } from '../../../contexts/CollectionContext';
 import { CollectionsSection } from './CollectionsSection';
@@ -17,6 +17,7 @@ import { APP_NAME } from '../../../constants/app';
 import { REPOSITORY_URL } from '../../../constants/support';
 import { useAppVersion } from '../../../hooks/useAppVersion';
 import { openExternalUrl } from '../../../utils/externalLinks';
+import { TooltipButton } from '../../../components/ui/InfoTooltip';
 
 interface FilterPanelProps {
     filters: FilterState;
@@ -119,7 +120,11 @@ export const FilterPanel: React.FC<FilterPanelProps> = ({
     // Quick Update Logic
     const allCols = React.useMemo(() => [...collections, ...smartCollections], [collections, smartCollections]);
     const activeSmartCol = React.useMemo(() =>
-        filters.collectionId ? allCols.find(c => c.id === filters.collectionId && !!c.filters) : null,
+        filters.collectionId
+            ? allCols.find((collection): collection is SmartCollection =>
+                collection.id === filters.collectionId && collection.filters !== undefined
+            ) ?? null
+            : null,
         [filters.collectionId, allCols]
     );
     const dateFilterLabel = getDateFilterLabel(filters);
@@ -153,14 +158,14 @@ export const FilterPanel: React.FC<FilterPanelProps> = ({
             // For lists (models, etc.), we UNION them.
             // For scalars (searchQuery), we OVERWRITE if manual is set (user intent to change).
 
-            const saved: FilterState = activeSmartCol.filters ?? filters;
+            const saved = activeSmartCol.filters;
             const manual = filters;
             const hasManualDateFilter = !!getDateFilterLabel(manual);
 
             const mergedFilters: FilterState = {
                 ...saved, // Start with saved rules
                 // Concatenate scalars if manual is set (Additive refinement)
-                searchQuery: [(saved.searchQuery || ''), (manual.searchQuery || '')].filter(Boolean).join(' ').trim(),
+                searchQuery: [saved.searchQuery, manual.searchQuery].filter(Boolean).join(' ').trim(),
                 dateRange: hasManualDateFilter ? manual.dateRange : saved.dateRange,
                 dateFrom: hasManualDateFilter ? manual.dateFrom : saved.dateFrom,
                 dateTo: hasManualDateFilter ? manual.dateTo : saved.dateTo,
@@ -172,13 +177,13 @@ export const FilterPanel: React.FC<FilterPanelProps> = ({
                 maxCfg: manual.maxCfg || saved.maxCfg,
 
                 // Union Lists
-                models: Array.from(new Set([...(saved.models || []), ...manual.models])),
-                tools: Array.from(new Set([...(saved.tools || []), ...manual.tools])),
-                loras: Array.from(new Set([...(saved.loras || []), ...manual.loras])),
-                embeddings: Array.from(new Set([...(saved.embeddings || []), ...manual.embeddings])),
-                hypernetworks: Array.from(new Set([...(saved.hypernetworks || []), ...manual.hypernetworks])),
-                controlNets: Array.from(new Set([...(saved.controlNets || []), ...manual.controlNets])),
-                ipAdapters: Array.from(new Set([...(saved.ipAdapters || []), ...manual.ipAdapters])),
+                models: Array.from(new Set([...saved.models, ...manual.models])),
+                tools: Array.from(new Set([...saved.tools, ...manual.tools])),
+                loras: Array.from(new Set([...saved.loras, ...manual.loras])),
+                embeddings: Array.from(new Set([...saved.embeddings, ...manual.embeddings])),
+                hypernetworks: Array.from(new Set([...saved.hypernetworks, ...manual.hypernetworks])),
+                controlNets: Array.from(new Set([...saved.controlNets, ...manual.controlNets])),
+                ipAdapters: Array.from(new Set([...saved.ipAdapters, ...manual.ipAdapters])),
 
                 // Keep Collection ID? Usually filters object for a collection definition doesn't contain its own ID or 'collectionId'.
                 // But FilterState might. Let's explicitly NOT include collectionId in the saved rule "payload" if possible, 
@@ -215,9 +220,9 @@ export const FilterPanel: React.FC<FilterPanelProps> = ({
                 ipAdapters: []
                 // Preserve collectionId and view options
             }));
-        } else if (activeSmartCol) {
+        } else {
             // Fallback
-            onSaveSmartCollection(activeSmartCol.name, filters);
+            onSaveSmartCollection(activeSmartCol!.name, filters);
         }
     };
 
@@ -266,6 +271,8 @@ export const FilterPanel: React.FC<FilterPanelProps> = ({
 
     return (
         <div
+            aria-hidden={!isVisible}
+            inert={isVisible ? undefined : true}
             className={`bg-white/90 dark:bg-zinc-900/95 backdrop-blur-xl border border-gray-200 dark:border-white/10 rounded-3xl flex flex-col h-full transition-all duration-500 ease-spring shadow-2xl ${isVisible ? 'w-72 opacity-100 translate-x-0' : 'w-0 opacity-0 -translate-x-4 overflow-hidden'} ${className}`}
         >
             {/* Header */}
@@ -373,20 +380,19 @@ export const FilterPanel: React.FC<FilterPanelProps> = ({
                                         const isSelected = assetScope === option.id;
 
                                         return (
-                                            <button
+                                            <TooltipButton
                                                 key={option.id}
-                                                type="button"
+                                                label={option.label}
+                                                content={option.label}
                                                 onClick={() => setAssetScope(option.id)}
-                                                aria-label={option.label}
                                                 aria-pressed={isSelected}
-                                                title={option.label}
                                                 className={`flex h-9 items-center justify-center rounded-lg transition-all ${isSelected
                                                     ? 'bg-white text-gray-900 shadow-sm dark:bg-zinc-800 dark:text-white'
                                                     : 'text-gray-500 hover:bg-white/50 hover:text-gray-800 dark:text-zinc-500 dark:hover:bg-white/5 dark:hover:text-zinc-200'
                                                     }`}
                                             >
                                                 <ScopeIcon className="h-4 w-4" aria-hidden="true" />
-                                            </button>
+                                            </TooltipButton>
                                         );
                                     })}
                                 </div>
@@ -524,14 +530,14 @@ export const FilterPanel: React.FC<FilterPanelProps> = ({
                     <span className="font-medium hover:text-gray-900 dark:hover:text-zinc-200 transition-colors cursor-default">{APP_NAME}</span>
                 </div>
                 <div className="flex items-center gap-3">
-                    <button
-                        type="button"
+                    <TooltipButton
+                        label="Open Ambit on GitHub"
+                        content="Open Ambit on GitHub"
                         onClick={() => openExternalUrl(REPOSITORY_URL)}
                         className="hover:text-gray-900 dark:hover:text-zinc-200 transition-colors opacity-80 hover:opacity-100"
-                        title="Open Ambit on GitHub"
                     >
                         <ExternalLink className="w-3 h-3" />
-                    </button>
+                    </TooltipButton>
                     <span className="hover:text-gray-900 dark:hover:text-zinc-200 transition-colors cursor-default">v{appVersion ?? '...'}</span>
                 </div>
             </div>

@@ -1,18 +1,45 @@
 import * as React from 'react';
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { X, Keyboard, Command, Search, ChevronDown, ChevronRight, Monitor, Hash, Puzzle, Sliders, Calendar } from 'lucide-react';
+import { X, Keyboard, Search, ChevronDown, ChevronRight, Monitor, Puzzle, Sliders, Calendar, ListChecks } from 'lucide-react';
 import { APP_NAME } from '../../constants/app';
+import { SEARCH_OPERATOR_DEFINITIONS, type SearchOperatorCategory } from '../../constants/searchOperators';
 
 interface ShortcutsModalProps {
     isOpen: boolean;
     onClose: () => void;
-    initialTab?: 'shortcuts' | 'search';
+    initialTab?: 'shortcuts' | 'search' | 'setup';
+    onOpenSetupGuide?: () => void;
 }
 
-export const ShortcutsModal: React.FC<ShortcutsModalProps> = ({ isOpen, onClose, initialTab = 'shortcuts' }) => {
-    const [activeTab, setActiveTab] = useState<'shortcuts' | 'search'>(initialTab);
+const getSearchOperatorIcon = (category: SearchOperatorCategory) => {
+    const className = 'w-3 h-3';
+    switch (category) {
+        case 'content': return <Search className={className} />;
+        case 'resource': return <Puzzle className={className} />;
+        case 'parameter': return <Sliders className={className} />;
+        case 'date': return <Calendar className={className} />;
+        case 'dimension': return <Monitor className={className} />;
+    }
+};
+
+export const ShortcutsModal: React.FC<ShortcutsModalProps> = ({ isOpen, onClose, initialTab = 'shortcuts', onOpenSetupGuide }) => {
+    const [activeTab, setActiveTab] = useState<'shortcuts' | 'search' | 'setup'>(initialTab);
     const [expandedCategories, setExpandedCategories] = useState<Record<string, boolean>>({});
+    const closeButtonRef = useRef<HTMLButtonElement>(null);
+
+    useEffect(() => {
+        if (!isOpen) return;
+
+        const previousFocus = document.activeElement instanceof HTMLElement
+            ? document.activeElement
+            : null;
+        closeButtonRef.current?.focus();
+
+        return () => {
+            if (previousFocus?.isConnected) previousFocus.focus();
+        };
+    }, [isOpen]);
 
     // Load expanded state from localStorage
     useEffect(() => {
@@ -58,71 +85,63 @@ export const ShortcutsModal: React.FC<ShortcutsModalProps> = ({ isOpen, onClose,
             title: 'General',
             items: [
                 { key: '?', desc: 'Show this help dialog' },
-                { key: 'Ctrl + K', desc: 'Open Command Palette' },
-                { key: 'Ctrl + F', desc: 'Focus search bar' },
+                { key: 'Ctrl/Cmd + K', desc: 'Open Command Palette' },
+                { key: 'Ctrl/Cmd + F', desc: 'Focus search bar' },
+                { key: 'Ctrl/Cmd + ,', desc: 'Open Settings' },
+                { key: 'Ctrl/Cmd + O', desc: 'Import images' },
                 { key: 'Shift + H', desc: 'Toggle Global Privacy Mode' },
                 { key: 'Esc', desc: 'Clear selection / Close dialog' },
+                { key: 'F11', desc: 'Toggle fullscreen (desktop app)' },
             ]
         },
         {
-            title: 'Navigation',
+            title: 'Library Navigation',
             items: [
                 { key: 'Arrow Keys', desc: 'Navigate grid' },
                 { key: 'Enter', desc: 'Open details / Save search' },
-                { key: 'Space', desc: 'Toggle Quick View' },
-                { key: 'Z', desc: 'Toggle Theater Mode (in Viewer)' },
+                { key: 'Space', desc: 'Open Quick View for selection' },
             ]
         },
         {
-            title: 'Actions',
+            title: 'Library Actions',
             items: [
-                { key: 'F', desc: 'Toggle Favorite' },
-                { key: 'P', desc: 'Toggle Pin' },
-                { key: 'M', desc: 'Toggle Content Mask' },
-                { key: 'C', desc: 'Add to Collection' },
-                { key: 'F2', desc: 'Batch Rename' },
-                { key: 'Del', desc: 'Delete selected' },
+                { key: 'F', desc: 'Toggle selected Favorites' },
+                { key: 'P', desc: 'Toggle selected Pins' },
+                { key: 'M', desc: 'Toggle selected Content Masks' },
+                { key: 'C', desc: 'Add selection to Collection' },
+                { key: 'Del', desc: 'Remove selected from Library' },
             ]
         },
         {
             title: 'Selection',
             items: [
-                { key: 'Ctrl + A', desc: 'Select all visible' },
-                { key: 'Ctrl + Click', desc: 'Toggle selection' },
+                { key: 'Ctrl/Cmd + A', desc: 'Select all visible' },
+                { key: 'Ctrl/Cmd + Click', desc: 'Toggle selection' },
                 { key: 'Shift + Click', desc: 'Range selection' },
             ]
+        },
+        {
+            title: 'Viewer',
+            items: [
+                { key: 'Left / Right', desc: 'Previous / Next image' },
+                { key: 'Space', desc: 'Close Quick View' },
+                { key: 'F', desc: 'Toggle Favorite' },
+                { key: 'P', desc: 'Toggle Pin' },
+                { key: 'I', desc: 'Toggle metadata sidebar' },
+                { key: 'Z', desc: 'Toggle Theater Mode' },
+                { key: 'Del', desc: 'Remove viewed image from Library' },
+                { key: 'Esc', desc: 'Exit Theater Mode / Close Viewer' },
+            ]
+        },
+        {
+            title: 'Slideshow',
+            items: [
+                { key: 'Left / Right', desc: 'Previous / Next image' },
+                { key: 'Space', desc: 'Play / Pause' },
+                { key: 'I', desc: 'Toggle image information' },
+                { key: 'Esc', desc: 'Close slideshow' },
+            ]
         }
-    ];
-
-    const searchOperators = [
-        // Content Search
-        { op: 'sunset', desc: 'Search positive prompt (default)', icon: <Search className="w-3 h-3" /> },
-        { op: 'orc OR elf', desc: 'Match either prompt term', icon: <Search className="w-3 h-3" /> },
-        { op: 'neg:blur', desc: 'Search negative prompt', icon: <Hash className="w-3 h-3" /> },
-        { op: 'file:portrait', desc: 'Search filename/path', icon: <Hash className="w-3 h-3" /> },
-        { op: 'all:anime', desc: 'Search all metadata (legacy)', icon: <Hash className="w-3 h-3" /> },
-
-        // Model & Resources
-        { op: 'model:sdxl', desc: 'Filter by model', icon: <Monitor className="w-3 h-3" /> },
-        { op: 'lora:detail', desc: 'Filter by LoRA', icon: <Puzzle className="w-3 h-3" /> },
-        { op: 'tool:invoke', desc: 'Filter by generator', icon: <Command className="w-3 h-3" /> },
-        { op: 'sampler:euler', desc: 'Filter by sampler', icon: <Sliders className="w-3 h-3" /> },
-
-        // Parameters
-        { op: 'steps:>30', desc: 'Steps greater than 30', icon: <Hash className="w-3 h-3" /> },
-        { op: 'cfg:<7', desc: 'CFG less than 7', icon: <Sliders className="w-3 h-3" /> },
-        { op: 'seed:12345', desc: 'Filter by seed', icon: <Hash className="w-3 h-3" /> },
-
-        // Dates
-        { op: 'date:2025', desc: 'All images from 2025', icon: <Calendar className="w-3 h-3" /> },
-        { op: 'date:2026-04', desc: 'All images from Apr 2026', icon: <Calendar className="w-3 h-3" /> },
-        { op: 'after:2026-04', desc: 'From Apr 2026 onward', icon: <Calendar className="w-3 h-3" /> },
-        { op: 'before:2025', desc: 'Through 2025', icon: <Calendar className="w-3 h-3" /> },
-
-        // Dimensions
-        { op: 'w:>1024', desc: 'Width filter', icon: <Monitor className="w-3 h-3" /> },
-        { op: 'h:<768', desc: 'Height filter', icon: <Monitor className="w-3 h-3" /> },
-        { op: 'upscaled:true', desc: 'Show upscaled only', icon: <Monitor className="w-3 h-3" /> },
     ];
 
     return (
@@ -138,7 +157,7 @@ export const ShortcutsModal: React.FC<ShortcutsModalProps> = ({ isOpen, onClose,
                 {/* Header */}
                 <div className="p-4 border-b border-gray-100 dark:border-white/5 flex items-center justify-between bg-gray-50/50 dark:bg-black/20">
                     <h2 className="text-lg font-bold text-gray-900 dark:text-white pl-2">{APP_NAME} Help & Guide</h2>
-                    <button onClick={onClose} className="p-1.5 text-gray-500 hover:text-gray-900 dark:hover:text-white rounded-lg hover:bg-gray-200 dark:hover:bg-white/10 transition-colors">
+                    <button ref={closeButtonRef} type="button" aria-label="Close Help & Guide" onClick={onClose} className="p-1.5 text-gray-500 hover:text-gray-900 dark:hover:text-white rounded-lg hover:bg-gray-200 dark:hover:bg-white/10 transition-colors">
                         <X className="w-5 h-5" />
                     </button>
                 </div>
@@ -149,7 +168,7 @@ export const ShortcutsModal: React.FC<ShortcutsModalProps> = ({ isOpen, onClose,
                         onClick={() => setActiveTab('shortcuts')}
                         className={`flex-1 py-3 text-sm font-medium flex items-center justify-center gap-2 transition-colors relative ${activeTab === 'shortcuts' ? 'text-sage-600 dark:text-sage-400 bg-white dark:bg-[#09090b]' : 'text-gray-500 hover:bg-gray-50 dark:hover:bg-white/5'}`}
                     >
-                        <Keyboard className="w-4 h-4" /> Keyboard Shortcuts
+                        <Keyboard className="w-4 h-4" /> Shortcuts
                         {activeTab === 'shortcuts' && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-sage-500" />}
                     </button>
                     <button
@@ -158,6 +177,13 @@ export const ShortcutsModal: React.FC<ShortcutsModalProps> = ({ isOpen, onClose,
                     >
                         <Search className="w-4 h-4" /> Search Syntax
                         {activeTab === 'search' && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-sage-500" />}
+                    </button>
+                    <button
+                        onClick={() => setActiveTab('setup')}
+                        className={`flex-1 py-3 text-sm font-medium flex items-center justify-center gap-2 transition-colors relative ${activeTab === 'setup' ? 'text-sage-600 dark:text-sage-400 bg-white dark:bg-[#09090b]' : 'text-gray-500 hover:bg-gray-50 dark:hover:bg-white/5'}`}
+                    >
+                        <ListChecks className="w-4 h-4" /> Setup Guide
+                        {activeTab === 'setup' && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-sage-500" />}
                     </button>
                 </div>
 
@@ -171,6 +197,8 @@ export const ShortcutsModal: React.FC<ShortcutsModalProps> = ({ isOpen, onClose,
                                 return (
                                     <div key={ci} className="border border-transparent">
                                         <button
+                                            type="button"
+                                            aria-expanded={isExpanded}
                                             onClick={() => toggleCategory(cat.title)}
                                             className="w-full flex items-center justify-between py-2 px-2 text-[10px] font-bold text-gray-400 uppercase tracking-widest hover:text-gray-900 dark:hover:text-white hover:bg-gray-50 dark:hover:bg-white/5 rounded transition-colors group"
                                         >
@@ -215,12 +243,12 @@ export const ShortcutsModal: React.FC<ShortcutsModalProps> = ({ isOpen, onClose,
                                         <div className="col-span-7">Description</div>
                                     </div>
                                     <div className="max-h-[300px] overflow-y-auto custom-scrollbar">
-                                        {searchOperators.map((op, i) => (
-                                            <div key={i} className="grid grid-cols-12 p-2 text-sm border-b border-gray-100 dark:border-white/5 last:border-0 hover:bg-white dark:hover:bg-white/5 transition-colors">
+                                        {SEARCH_OPERATOR_DEFINITIONS.map(operator => (
+                                            <div key={operator.example} className="grid grid-cols-12 p-2 text-sm border-b border-gray-100 dark:border-white/5 last:border-0 hover:bg-white dark:hover:bg-white/5 transition-colors">
                                                 <div className="col-span-5 font-mono text-sage-600 dark:text-sage-400 pl-2 flex items-center gap-2 whitespace-nowrap overflow-hidden text-ellipsis">
-                                                    {op.icon} {op.op}
+                                                    {getSearchOperatorIcon(operator.category)} {operator.example}
                                                 </div>
-                                                <div className="col-span-7 text-xs text-gray-600 dark:text-gray-400">{op.desc}</div>
+                                                <div className="col-span-7 text-xs text-gray-600 dark:text-gray-400">{operator.description}</div>
                                             </div>
                                         ))}
                                     </div>
@@ -283,12 +311,33 @@ export const ShortcutsModal: React.FC<ShortcutsModalProps> = ({ isOpen, onClose,
                             <div className="p-4 rounded-lg bg-gray-100 dark:bg-white/5 border border-gray-200 dark:border-white/10">
                                 <h4 className="text-xs font-bold text-gray-800 dark:text-gray-300 mb-1">Example Query</h4>
                                 <div className="font-mono text-xs bg-white dark:bg-black/40 p-2 rounded border border-gray-200 dark:border-white/10 text-gray-700 dark:text-gray-300 mb-2">
-                                    orc OR "dark elf" model:pony
+                                    forest OR "city skyline" model:flux
                                 </div>
                                 <p className="text-[10px] text-gray-600 dark:text-gray-400 uppercase tracking-tight">
-                                    Finds Pony images whose positive prompt mentions orc or dark elf.
+                                    Finds Flux images whose positive prompt mentions forest or city skyline.
                                 </p>
                             </div>
+                        </div>
+                    )}
+
+                    {activeTab === 'setup' && (
+                        <div className="space-y-5 animate-in fade-in slide-in-from-right-4 duration-300">
+                            <div className="rounded-xl border border-sage-200 bg-sage-50 p-5 dark:border-sage-500/20 dark:bg-sage-500/10">
+                                <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-xl bg-white text-sage-600 shadow-sm dark:bg-white/10 dark:text-sage-300">
+                                    <ListChecks className="h-5 w-5" />
+                                </div>
+                                <h3 className="text-base font-bold text-gray-900 dark:text-white">Review your setup</h3>
+                                <p className="mt-2 text-sm leading-relaxed text-gray-600 dark:text-gray-300">
+                                    Walk through integrations, Intelligence, and privacy again without resetting your library or existing preferences. Only guide controls you change are saved when you finish.
+                                </p>
+                            </div>
+                            <button
+                                type="button"
+                                onClick={onOpenSetupGuide}
+                                className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-sage-600 px-4 py-3 text-sm font-bold text-white transition-colors hover:bg-sage-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sage-500 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-[#09090b]"
+                            >
+                                <ListChecks className="h-4 w-4" /> Open setup guide
+                            </button>
                         </div>
                     )}
 

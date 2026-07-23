@@ -5,6 +5,7 @@ import { APP_NAME } from "../../constants/app";
 import { useSettingsStore } from "../../stores/settingsStore";
 import { isTauriRuntime } from "../../services/runtime";
 import { areDeveloperFeaturesEnabled } from "../../utils/settingsUtils";
+import { isCaptureMode } from "../../utils/buildFlags";
 
 const BRAND_GLYPH_SRC = "/branding/ambit-glyph.svg";
 const BRAND_WINDOW_ICON_SRC = "/branding/ambit-window-icon.png";
@@ -18,6 +19,8 @@ export const TitleBar = () => {
 
     useEffect(() => {
         if (!isTauriRuntime()) return;
+        let cleanup: (() => void) | undefined;
+        let disposed = false;
 
         const initWindow = async () => {
             try {
@@ -51,25 +54,33 @@ export const TitleBar = () => {
 
                 window.addEventListener('keydown', handleKeyDown);
 
-                return () => {
+                const disposeListeners = () => {
                     unlistenResize();
                     window.removeEventListener('keydown', handleKeyDown);
                 };
+                if (disposed) {
+                    disposeListeners();
+                } else {
+                    cleanup = disposeListeners;
+                }
             } catch (e) {
                 console.warn("TitleBar: Not in Tauri environment");
             }
         };
-        initWindow();
+        void initWindow();
+        return () => {
+            disposed = true;
+            cleanup?.();
+        };
     }, []);
 
     const handleMinimize = () => appWindow?.minimize();
     const handleMaximize = async () => {
-        if (!appWindow) return;
-        const current = await appWindow.isMaximized();
+        const current = await appWindow!.isMaximized();
         if (current) {
-            await appWindow.unmaximize();
+            await appWindow!.unmaximize();
         } else {
-            await appWindow.maximize();
+            await appWindow!.maximize();
         }
         setIsMaximized(!current);
     };
@@ -108,7 +119,7 @@ export const TitleBar = () => {
                     <span className="text-[13px] font-semibold tracking-[0.18em] text-zinc-700 dark:text-zinc-300">
                         {APP_NAME.toUpperCase()}
                     </span>
-                    {developerFeaturesEnabled && (
+                    {developerFeaturesEnabled && !isCaptureMode() && (
                         <span className="ml-2 px-1.5 py-0.5 bg-amber-500/20 text-amber-500 text-[9px] font-bold rounded animate-pulse">
                             DEV
                         </span>
@@ -117,14 +128,18 @@ export const TitleBar = () => {
 
                 <div className="flex h-full">
                     <button
+                        type="button"
+                        aria-label="Minimize Window"
                         onClick={handleMinimize}
-                        className="h-full px-4 hover:bg-gray-100 dark:hover:bg-white/10 flex items-center justify-center transition-colors text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-white outline-none focus:outline-none"
+                        className="h-full px-4 hover:bg-gray-100 dark:hover:bg-white/10 flex items-center justify-center transition-colors text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-sage-500/70 focus-visible:bg-gray-100 dark:focus-visible:bg-white/10"
                     >
                         <Minus className="w-4 h-4" />
                     </button>
                     <button
+                        type="button"
+                        aria-label={isMaximized ? "Restore Window" : "Maximize Window"}
                         onClick={handleMaximize}
-                        className="h-full px-4 hover:bg-gray-100 dark:hover:bg-white/10 flex items-center justify-center transition-colors text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-white outline-none focus:outline-none"
+                        className="h-full px-4 hover:bg-gray-100 dark:hover:bg-white/10 flex items-center justify-center transition-colors text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-sage-500/70 focus-visible:bg-gray-100 dark:focus-visible:bg-white/10"
                     >
                         {isMaximized ? (
                             <div className="relative w-3 h-3 pointer-events-none">
@@ -136,8 +151,10 @@ export const TitleBar = () => {
                         )}
                     </button>
                     <button
+                        type="button"
+                        aria-label="Close Window"
                         onClick={handleClose}
-                        className="h-full px-4 hover:bg-red-500 flex items-center justify-center transition-colors text-gray-500 hover:text-white dark:text-gray-400 outline-none focus:outline-none"
+                        className="h-full px-4 hover:bg-red-500 flex items-center justify-center transition-colors text-gray-500 hover:text-white dark:text-gray-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-red-300 focus-visible:bg-red-500 focus-visible:text-white"
                     >
                         <X className="w-4 h-4" />
                     </button>

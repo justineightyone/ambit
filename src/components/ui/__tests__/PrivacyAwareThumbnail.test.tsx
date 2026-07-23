@@ -13,11 +13,26 @@ describe('PrivacyAwareThumbnail', () => {
     beforeEach(() => {
         useSettingsStore.setState({
             privacyEnabled: true,
+            privacyMaskIndexStatus: 'ready',
             settings: {
                 ...useSettingsStore.getState().settings,
                 maskingMode: 'blur'
             }
         });
+    });
+
+    it('never renders a thumbnail while the privacy index is stale', () => {
+        useSettingsStore.setState({ privacyMaskIndexStatus: 'pending' });
+
+        render(<PrivacyAwareThumbnail src="unsafe.webp" alt="Example" />);
+
+        expect(screen.queryByTestId('smart-image')).toBeNull();
+        expect(screen.getByTestId('privacy-thumbnail-placeholder')).not.toBeNull();
+    });
+
+    it('treats thumbnails as non-sensitive by default', () => {
+        render(<PrivacyAwareThumbnail src="plain.webp" alt="Plain" />);
+        expect(screen.getByTestId('smart-image').getAttribute('src')).toBe('plain.webp');
     });
 
     it('renders the normal thumbnail when privacy is disabled', () => {

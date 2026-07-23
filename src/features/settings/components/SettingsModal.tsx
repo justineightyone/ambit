@@ -10,6 +10,7 @@ import { useAppVersion } from '../../../hooks/useAppVersion';
 import type { ImportResult } from '../../../services/importService';
 import { isDevelopmentBuild } from '../../../utils/settingsUtils';
 
+/* istanbul ignore next -- import.meta.env.DEV is fixed for a given build. */
 const DevTab = import.meta.env.DEV
   ? React.lazy(() => import('./DevTab').then(module => ({ default: module.DevTab })))
   : null;
@@ -31,6 +32,7 @@ interface SettingsModalProps {
   onCheckForUpdates: () => Promise<void>;
   onOpenUpdatePrompt: () => void;
   onNavigateToMaintenance: () => void;
+  onResetFirstRunOnboarding?: () => void;
 }
 
 type SettingsTab = 'general' | 'connections' | 'intelligence' | 'privacy' | 'dev' | 'advanced';
@@ -88,7 +90,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = React.memo(({
   updateStatus,
   onCheckForUpdates,
   onOpenUpdatePrompt,
-  onNavigateToMaintenance
+  onNavigateToMaintenance,
+  onResetFirstRunOnboarding
 }) => {
   const appVersion = useAppVersion();
   const showDevTools = isDevelopmentBuild();
@@ -256,7 +259,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = React.memo(({
                 )}
                 {activeTab === 'dev' && showDevTools && DevTab && (
                   <React.Suspense fallback={null}>
-                    <DevTab />
+                    <DevTab onResetFirstRunOnboarding={onResetFirstRunOnboarding} />
                   </React.Suspense>
                 )}
               </div>

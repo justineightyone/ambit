@@ -7,6 +7,8 @@ import { SearchInput } from '../../filters/components/FilterPrimitives';
 import { PrivacyAwareThumbnail } from '../../../components/ui/PrivacyAwareThumbnail';
 import { CollectionThumbnailSkeleton } from '../../../components/ui/CollectionThumbnailSkeleton';
 import { useCollectionStore } from '../../../stores/collectionStore';
+import { TooltipButton } from '../../../components/ui/InfoTooltip';
+import { compareCollectionsByCount, getCollectionCount } from '../../../utils/collectionCount';
 
 interface AddToCollectionModalProps {
     isOpen: boolean;
@@ -21,8 +23,7 @@ interface AddToCollectionModalProps {
 
 type CollectionSort = 'name_asc' | 'name_desc' | 'count_asc' | 'count_desc' | 'date_asc' | 'date_desc';
 
-const getColorClass = (colorName?: string) => {
-    if (!colorName) return '';
+const getColorClass = (colorName: string) => {
     switch (colorName) {
         case 'red': return 'bg-red-500';
         case 'orange': return 'bg-orange-500';
@@ -47,8 +48,22 @@ export const AddToCollectionModal: React.FC<AddToCollectionModalProps> = ({
     const [sort, setSort] = useState<CollectionSort>('date_desc');
     const [showSortMenu, setShowSortMenu] = useState(false);
     const [showArchived, setShowArchived] = useState(false);
+    const closeButtonRef = React.useRef<HTMLButtonElement>(null);
     const thumbnailHydrationPendingIds = useCollectionStore(s => s.thumbnailHydrationPendingIds);
     const smartSummaryPendingIds = useCollectionStore(s => s.smartSummaryPendingIds);
+
+    React.useEffect(() => {
+        if (!isOpen) return;
+
+        const previousFocus = document.activeElement instanceof HTMLElement
+            ? document.activeElement
+            : null;
+        closeButtonRef.current?.focus();
+
+        return () => {
+            if (previousFocus?.isConnected) previousFocus.focus();
+        };
+    }, [isOpen]);
 
     const allCollections = [...collections, ...smartCollections];
 
@@ -63,8 +78,8 @@ export const AddToCollectionModal: React.FC<AddToCollectionModalProps> = ({
             switch (sort) {
                 case 'name_asc': return a.name.localeCompare(b.name);
                 case 'name_desc': return b.name.localeCompare(a.name);
-                case 'count_asc': return (a.count ?? a.imageIds.length) - (b.count ?? b.imageIds.length);
-                case 'count_desc': return (b.count ?? b.imageIds.length) - (a.count ?? a.imageIds.length);
+                case 'count_asc': return compareCollectionsByCount(a, b, 'asc');
+                case 'count_desc': return compareCollectionsByCount(a, b, 'desc');
                 case 'date_asc': return a.createdAt - b.createdAt;
                 case 'date_desc': default: return b.createdAt - a.createdAt;
             }
@@ -106,7 +121,7 @@ export const AddToCollectionModal: React.FC<AddToCollectionModalProps> = ({
                         </h3>
                         <p className="text-xs text-gray-500">{selectedIds.length} images selected</p>
                     </div>
-                    <button onClick={onClose} className="p-2 hover:bg-gray-100 dark:hover:bg-white/5 rounded-full transition-colors">
+                    <button ref={closeButtonRef} type="button" aria-label="Close Add to Collection" onClick={onClose} className="p-2 hover:bg-gray-100 dark:hover:bg-white/5 rounded-full transition-colors">
                         <X className="w-5 h-5 text-gray-400" />
                     </button>
                 </div>
@@ -121,21 +136,25 @@ export const AddToCollectionModal: React.FC<AddToCollectionModalProps> = ({
                     />
 
                     <div className="relative">
-                        <button
+                        <TooltipButton
+                            label="Sort Collections"
+                            content="Sort Collections"
+                            aria-expanded={showSortMenu}
                             onClick={() => setShowSortMenu(!showSortMenu)}
                             className={`p-2 rounded-lg border transition-all ${showSortMenu ? 'bg-sage-600 text-white border-sage-600' : 'bg-white dark:bg-zinc-800 border-gray-200 dark:border-white/10 text-gray-500'}`}
-                            title="Sort Collections"
                         >
                             <ArrowUpDown className="w-4 h-4" />
-                        </button>
+                        </TooltipButton>
 
-                        <button
+                        <TooltipButton
+                            label={showArchived ? "Hide Archived Collections" : "Show Archived Collections"}
+                            content={showArchived ? "Hide Archived Collections" : "Show Archived Collections"}
+                            aria-pressed={showArchived}
                             onClick={() => setShowArchived(!showArchived)}
                             className={`p-2 rounded-lg border transition-all ${showArchived ? 'bg-sage-600 text-white border-sage-600' : 'bg-white dark:bg-zinc-800 border-gray-200 dark:border-white/10 text-gray-500'}`}
-                            title={showArchived ? "Hide Archived" : "Show Archived"}
                         >
                             <Archive className="w-4 h-4" />
-                        </button>
+                        </TooltipButton>
 
                         <AnimatePresence>
                             {showSortMenu && (
@@ -173,6 +192,7 @@ export const AddToCollectionModal: React.FC<AddToCollectionModalProps> = ({
                         <div className="grid grid-cols-1 gap-1">
                             {filtered.map(col => {
                                 const showThumbnailSkeleton = (!!thumbnailHydrationPendingIds[col.id] || !!smartSummaryPendingIds[col.id]) && !col.thumbnail;
+                                const count = getCollectionCount(col);
 
                                 return (
                                     <button
@@ -229,7 +249,13 @@ export const AddToCollectionModal: React.FC<AddToCollectionModalProps> = ({
                                                         <span className="text-[8px] bg-gray-200 dark:bg-white/10 text-gray-500 px-1 rounded uppercase tracking-tighter">Archived</span>
                                                     )}
                                                 </div>
-                                                <div className="text-[10px] text-gray-500 dark:text-gray-500 uppercase tracking-wider">{col.count ?? col.imageIds.length} images</div>
+                                                <div
+                                                    className="text-[10px] text-gray-500 dark:text-gray-500 uppercase tracking-wider"
+                                                    aria-label={count === undefined ? 'Count not calculated' : undefined}
+                                                    title={count === undefined ? 'Count not calculated' : undefined}
+                                                >
+                                                    {count === undefined ? '\u2014' : `${count} images`}
+                                                </div>
                                             </div>
                                         </div>
                                         <div className="opacity-0 group-hover:opacity-100 transform translate-x-2 group-hover:translate-x-0 transition-all text-sage-600">
