@@ -36,12 +36,13 @@ interface MaintenanceViewProps {
     onUpdateModel?: (id: string, model: string) => void;
     onUpdateTool?: (id: string, tool: GeneratorTool) => void;
     onUpdateNotes?: (id: string, notes: string) => void;
-    onRecoverMetadata?: () => void;
+    onRecoverMetadata?: (targetId: string, onRecovered: (image: AIImage) => void) => void;
     onToggleFavorite?: (id: string) => void;
     onTogglePin?: (id: string, isPinned: boolean) => void;
     onSetCollectionMembership: (imageId: string, collectionId: string, shouldBelong: boolean) => Promise<boolean>;
     availableTags?: string[];
     onViewerOpenChange: (isOpen: boolean) => void;
+    onOpenReferencedImage: (imageId: string) => Promise<boolean>;
     isShortcutBlocked: boolean;
 }
 
@@ -66,6 +67,7 @@ export const MaintenanceView: React.FC<MaintenanceViewProps> = ({
     onSetCollectionMembership,
     availableTags,
     onViewerOpenChange,
+    onOpenReferencedImage,
     isShortcutBlocked
 }) => {
     // --- State ---
@@ -86,6 +88,7 @@ export const MaintenanceView: React.FC<MaintenanceViewProps> = ({
 
     const [viewingImageId, setViewingImageId] = useState<string | null>(null);
     const [compareImages, setCompareImages] = useState<[AIImage, AIImage] | null>(null);
+    const [recoveredImages, setRecoveredImages] = useState<Map<string, AIImage>>(() => new Map());
     const [removedAction, setRemovedAction] = useState<'restoring' | 'deleting' | null>(null);
     const scrollContainerRef = useRef<HTMLDivElement>(null);
 
@@ -151,8 +154,17 @@ export const MaintenanceView: React.FC<MaintenanceViewProps> = ({
             ...localIntermediateImages,
             ...activeImages
         ];
-        return allPool.find(i => i.id === viewingImageId) || null;
-    }, [viewingImageId, missingImages, localUntaggedImages, localDeletedImages, localUnoptimizedImages, localDuplicateCandidates, localIntermediateImages, activeImages]);
+        const image = allPool.find(i => i.id === viewingImageId) || null;
+        return image ? recoveredImages.get(image.id) ?? image : null;
+    }, [viewingImageId, missingImages, localUntaggedImages, localDeletedImages, localUnoptimizedImages, localDuplicateCandidates, localIntermediateImages, activeImages, recoveredImages]);
+
+    const handleRecoveredImage = useCallback((image: AIImage) => {
+        setRecoveredImages(previous => {
+            const next = new Map(previous);
+            next.set(image.id, image);
+            return next;
+        });
+    }, []);
 
     // --- Selection Hook ---
     const {
@@ -200,6 +212,12 @@ export const MaintenanceView: React.FC<MaintenanceViewProps> = ({
             setViewingImageId(id);
         });
     }, [handleImageClick, setViewingImageId]);
+
+    const handleOpenReferencedImage = useCallback(async (imageId: string): Promise<boolean> => {
+        const opened = await onOpenReferencedImage(imageId);
+        if (opened) setViewingImageId(null);
+        return opened;
+    }, [onOpenReferencedImage]);
 
     const handleSelectAll = useCallback(() => {
         const ids = currentList.map(i => i.id);
@@ -633,10 +651,11 @@ export const MaintenanceView: React.FC<MaintenanceViewProps> = ({
                     onUpdateModel={onUpdateModel}
                     onUpdateTool={onUpdateTool}
                     onUpdateNotes={onUpdateNotes}
-                    onRecoverMetadata={onRecoverMetadata}
+                    onRecoverMetadata={() => onRecoverMetadata?.(viewingImageId, handleRecoveredImage)}
                     availableTags={availableTags}
                     onOpenSettings={() => { }}
                     onDelete={activeTab === 'trash' ? undefined : handleViewerCleanup}
+                    onOpenReferencedImage={handleOpenReferencedImage}
                 />
             )}
 

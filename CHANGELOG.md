@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.10.0](https://github.com/AsuraAce/ambit/compare/v0.9.1...v0.10.0) (2026-08-03)
+
+
+### Features
+
+* expand and harden ComfyUI metadata extraction ([28db2dc](https://github.com/AsuraAce/ambit/commit/28db2dccba6e667df56d1b0a5c982aeb6787b682))
+* **invokeai:** add owner-aware assets and metadata ([#267](https://github.com/AsuraAce/ambit/issues/267)) ([2cb0cbe](https://github.com/AsuraAce/ambit/commit/2cb0cbeffe77b5fad36a250befadc38f172a986a))
+
+
+### Bug Fixes
+
+* **release:** keep generated versions consistent ([181735c](https://github.com/AsuraAce/ambit/commit/181735cf1a704b9a5e8ae75f004f88655ad4c9a4))
+
+## [0.9.1](https://github.com/AsuraAce/ambit/compare/v0.9.0...v0.9.1) (2026-07-27)
+
+
+### Bug Fixes
+
+* recover prompts from maintenance viewer ([#260](https://github.com/AsuraAce/ambit/issues/260)) ([8838489](https://github.com/AsuraAce/ambit/commit/8838489be0df4ce62a82a6b7b95acc536770a9c7))
+
 ## [0.9.0](https://github.com/AsuraAce/ambit/compare/v0.8.0...v0.9.0) (2026-07-22)
 
 

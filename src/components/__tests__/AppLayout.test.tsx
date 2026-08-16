@@ -183,7 +183,7 @@ describe('AppLayout', () => {
         setLayoutMode: vi.fn(),
         sortOption: 'date-desc',
         setSortOption: vi.fn(),
-        totalImages: 0,
+        displayedCount: 0,
         scopeTotal: 0,
         scopeName: 'All Photos',
         isFiltering: false,
@@ -196,6 +196,7 @@ describe('AppLayout', () => {
         handlers: {} as any,
         setViewingImageId: vi.fn(),
         onMaintenanceViewerOpenChange: vi.fn(),
+        onOpenReferencedImage: vi.fn().mockResolvedValue(true),
         isViewerShortcutBlocked: false,
         settings: {} as any,
         privacyEnabled: false,
@@ -229,6 +230,17 @@ describe('AppLayout', () => {
         expect(screen.getByTestId('error-boundary')).toBeTruthy();
     });
 
+    it('uses the authoritative scoped count supplied by App', () => {
+        searchState.value.totalImages = 265804;
+
+        render(<AppLayout {...defaultProps} displayedCount={823} scopeTotal={823} />);
+
+        expect(capturedProps.header).toEqual(expect.objectContaining({
+            displayedCount: 823,
+            totalCount: 823,
+        }));
+    });
+
     it('unmounts library surfaces while privacy protection is stale', () => {
         useSettingsStore.setState({ privacyMaskIndexStatus: 'failed' });
 
@@ -240,6 +252,21 @@ describe('AppLayout', () => {
 
         view.rerender(<AppLayout {...defaultProps} viewMode="maintenance" />);
         expect(screen.queryByTestId('maintenance-view')).toBeNull();
+    });
+
+    it('holds the privacy gate while initial preparation finishes presenting', () => {
+        const view = render(
+            <AppLayout {...defaultProps} viewMode="grid" forcePrivacyProtectionGate />
+        );
+
+        expect(screen.getByTestId('privacy-protection-gate')).toBeTruthy();
+        expect(screen.queryByTestId('virtual-grid')).toBeNull();
+
+        view.rerender(
+            <AppLayout {...defaultProps} viewMode="grid" forcePrivacyProtectionGate={false} />
+        );
+        expect(screen.queryByTestId('privacy-protection-gate')).toBeNull();
+        expect(screen.getByTestId('virtual-grid')).toBeTruthy();
     });
 
     it('renders VirtualGrid when viewMode is grid', () => {
@@ -282,7 +309,7 @@ describe('AppLayout', () => {
         );
 
         expect(screen.getByTestId('virtual-grid').getAttribute('data-transition-key')).toBe(
-            `justified|${thumbnailSize}|name_asc|collection-1|favorites|unpinned-scope|show-grids|hide-intermediates`
+            `justified|${thumbnailSize}|name_asc|collection-1|favorites|unpinned-scope|show-grids|hide-intermediates|hide-invoke-assets`
         );
     });
 
@@ -340,6 +367,7 @@ describe('AppLayout', () => {
         render(<AppLayout {...defaultProps} viewMode="maintenance" isViewerShortcutBlocked={true} />);
         expect(await screen.findByTestId('maintenance-view')).toBeTruthy();
         expect(capturedProps.maintenance?.onViewerOpenChange).toBe(defaultProps.onMaintenanceViewerOpenChange);
+        expect(capturedProps.maintenance?.onOpenReferencedImage).toBe(defaultProps.onOpenReferencedImage);
         expect(capturedProps.maintenance?.isShortcutBlocked).toBe(true);
     });
 
@@ -675,51 +703,33 @@ describe('AppLayout', () => {
         expect(vi.getTimerCount()).toBe(0);
     });
 
-    it('routes maintenance actions and gates AI recovery on configuration', async () => {
-        const originalStore = useSettingsStore.getState();
-        const addToast = vi.fn();
+    it('routes maintenance actions and explicit recovery targets', async () => {
         const setViewingImageId = vi.fn();
-        const toggleFavorite = vi.fn();
         const handleUpdateNotes = vi.fn();
-        const modals = { setInitialSettingsTab: vi.fn(), openModal: vi.fn() };
-        useSettingsStore.setState({
-            settings: { ...originalStore.settings, enableAI: false },
-            geminiApiKey: null
-        });
-        const { rerender } = render(<AppLayout
+        const openMetadataRecovery = vi.fn();
+        render(<AppLayout
             {...defaultProps}
             viewMode="maintenance"
-            addToast={addToast}
             setViewingImageId={setViewingImageId}
             handlers={{ handleUpdateNotes }}
-            modals={modals}
+            actions={{ openMetadataRecovery }}
         />);
         await screen.findByTestId('maintenance-view');
-        let maintenance = capturedProps.maintenance as {
+        const maintenance = capturedProps.maintenance as {
             onViewImage: (id: string) => void;
             onUpdateNotes: (id: string, notes: string) => void;
-            onRecoverMetadata: () => void;
+            onRecoverMetadata: (id: string, onRecovered: (image: AIImage) => void) => void;
             onToggleFavorite: (id: string) => void;
         };
+        const onRecovered = vi.fn();
         maintenance.onViewImage('image-1');
         maintenance.onUpdateNotes('image-1', 'note');
-        maintenance.onRecoverMetadata();
+        maintenance.onRecoverMetadata('image-1', onRecovered);
         maintenance.onToggleFavorite('image-1');
         expect(setViewingImageId).toHaveBeenCalledWith('image-1');
         expect(handleUpdateNotes).toHaveBeenCalledWith('image-1', 'note');
-        expect(addToast).toHaveBeenCalledWith('Enable AI features and configure a Gemini API key first', 'error');
-        expect(modals.setInitialSettingsTab).toHaveBeenCalledWith('intelligence');
+        expect(openMetadataRecovery).toHaveBeenCalledWith('image-1', onRecovered);
         expect(searchState.value.toggleFavorite).toHaveBeenCalledWith('image-1');
-
-        useSettingsStore.setState({
-            settings: { ...originalStore.settings, enableAI: true },
-            geminiApiKey: 'configured-key'
-        });
-        rerender(<AppLayout {...defaultProps} viewMode="maintenance" addToast={addToast} modals={modals} />);
-        maintenance = capturedProps.maintenance as typeof maintenance;
-        maintenance.onRecoverMetadata();
-        expect(modals.openModal).toHaveBeenCalledWith('recovery');
-        useSettingsStore.setState({ settings: originalStore.settings, geminiApiKey: originalStore.geminiApiKey });
     });
 
     it('wires timeline and pinned-shelf image interactions', () => {

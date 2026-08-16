@@ -37,6 +37,22 @@ async saveImagesBatch(images: ImageRecord[]) : Promise<Result<number, string>> {
     else return { status: "error", error: e  as any };
 }
 },
+async reconcileInvokeImageSources(updates: InvokeImageSourceUpdate[]) : Promise<Result<InvokeImageSourceReconcileResult, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("reconcile_invoke_image_sources", { updates }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async replaceInvokeImageReferences(referenceSets: InvokeImageReferenceSet[]) : Promise<Result<InvokeImageReferenceReplaceResult, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("replace_invoke_image_references", { referenceSets }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async moveImagePathIdentities(moves: ImagePathIdentityMove[]) : Promise<Result<ImagePathIdentityMoveResult, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("move_image_path_identities", { moves }) };
@@ -107,6 +123,14 @@ async getImageCountForPathPrefix(path: string) : Promise<Result<number, string>>
 async refreshPrivacyMaskIndex(maskedKeywords: string[]) : Promise<Result<PrivacyMaskRefreshResult, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("refresh_privacy_mask_index", { maskedKeywords }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async refreshInvokeOwnerScope(input: InvokeOwnerScopeInput) : Promise<Result<InvokeOwnerScopeRefreshResult, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("refresh_invoke_owner_scope", { input }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -582,7 +606,8 @@ export type A1111DiscoveryCandidate = { path: string; name: string; imageCount: 
 export type A1111DiscoveryResult = { detectedVariant: string; candidates: A1111DiscoveryCandidate[]; logs: string[]; warnings: string[] }
 export type BackupInfo = { name: string; path: string; createdAt: string; sizeBytes: number }
 export type ComfyMetadataPreview = { tool: string; model: string; seed: number | null; steps: number; cfg: number; sampler: string; positivePrompt: string; negativePrompt: string; loras: string[]; controlNets: string[]; ipAdapters: string[]; embeddings: string[]; hypernetworks: string[]; generationType: string; hasWorkflowHint: boolean; hasWorkflowJson: boolean }
-export type ComfyParserDiagnosticsReport = { chunkKeys: string[]; hasPromptChunk: boolean; hasWorkflowChunk: boolean; graphNodeCount: number; attemptedLayers: string[]; fieldSources: Partial<{ [key in string]: string }>; metadata: ComfyMetadataPreview }
+export type ComfyParserDiagnosticsReport = { chunkKeys: string[]; hasPromptChunk: boolean; hasWorkflowChunk: boolean; graphNodeCount: number; selectedOutputCandidateCount: number; uniqueOutputRootSamplerCount: number; outputAmbiguous: boolean; traversalIssues: ComfyTraversalIssueReport[]; traversalIssuesTruncated: boolean; attemptedLayers: string[]; fieldSources: Partial<{ [key in string]: string }>; metadata: ComfyMetadataPreview }
+export type ComfyTraversalIssueReport = { field: string; nodeId: string; nodeType: string; inputName: string | null; reason: string }
 export type DbDiagnostics = { dbPath: string; activeDbPath: string; localDbPath: string; roamingDbPath: string; appLogDir: string; appLogPath: string; isUsingRoamingFallback: boolean; imageCount: number; deletedCount: number; modelCount: number; cacheCount: number; toolNullCount: number }
 export type ExactDuplicateKeeperState = { id: string; isFavorite: boolean; isPinned: boolean; userMasked: boolean | null }
 export type ExactDuplicateResolution = { keepId: string; removeIds: string[] }
@@ -602,12 +627,21 @@ microThumbnail: string | null;
 /**
  * Source of the thumbnail: 'ambit', 'invokeai', etc.
  */
-thumbnailSource: string | null; isFavorite: boolean; isPinned: boolean; isDeleted: boolean; isMissing: boolean; isCorrupt: boolean; userMasked: boolean | null; groupId: string | null; boardId: string | null; notes: string | null; originalMetadataJson: string | null; originalStateJson: string | null }
+thumbnailSource: string | null; isFavorite: boolean; isPinned: boolean; isDeleted: boolean; isMissing: boolean; isCorrupt: boolean; userMasked: boolean | null; groupId: string | null; boardId: string | null; notes: string | null; originalMetadataJson: string | null; originalStateJson: string | null; invokeImageName: string | null; invokeImageCategory: string | null; invokeImageOrigin: string | null; invokeOwnerId: string | null }
 export type ImageToReparse = { id: string; tool: string; originalMetadataJson: string }
 export type ImportResult = { added: number; totalFound: number; message: string }
 export type IntegrityResult = { missing: number; recovered: number; broken_thumbs: number }
 export type InvokeDbSnapshot = { dbPath: string; files: InvokeDbSnapshotFile[] }
 export type InvokeDbSnapshotFile = { path: string; exists: boolean; size: number; modifiedMs: number | null }
+export type InvokeImageReferenceInput = { role: InvokeImageReferenceRole; targetInvokeImageName: string }
+export type InvokeImageReferenceReplaceResult = { sourcesReplaced: number; referencesWritten: number; skippedMissingSources: number }
+export type InvokeImageReferenceRole = "init_image" | "controlnet_image" | "controlnet_processed_image" | "ip_adapter_image" | "t2i_adapter_image" | "t2i_adapter_processed_image"
+export type InvokeImageReferenceSet = { sourceImageId: string; references: InvokeImageReferenceInput[] }
+export type InvokeImageSourceReconcileResult = { activeUpdated: number; removedUpdated: number }
+export type InvokeImageSourceUpdate = { id: string; invokeImageName: string; invokeImageCategory: string | null; invokeImageOrigin: string | null; invokeOwnerId: string | null }
+export type InvokeOwnerScopeInput = { dbPath: string; imagesRoot: string; mode: InvokeOwnerScopeMode; ownerId: string | null; forceRefresh: boolean }
+export type InvokeOwnerScopeMode = "legacy" | "unselected" | "owner" | "all"
+export type InvokeOwnerScopeRefreshResult = { changed: boolean; activeUpdated: number; removedUpdated: number }
 export type MetadataStats = { total: number; with_raw: number; with_pv: number; v0: number; v1: number }
 export type NumericRange = { min: number; max: number }
 export type ParameterRanges = { steps: NumericRange | null; cfg: NumericRange | null; denoisingStrength: NumericRange | null; samplers: string[]; generationTypes: string[]; controlNets: string[]; ipAdapters: string[]; guidanceSubtypes: Partial<{ [key in string]: string }> }
