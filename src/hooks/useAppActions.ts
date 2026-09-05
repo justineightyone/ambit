@@ -1,6 +1,6 @@
 import * as React from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { AIImage, AppSettings, FilterState, Collection, RecoveryStyle } from '../types';
+import { AIImage, AppSettings, FilterState, Collection, RecoveryStyle, isVideoAsset } from '../types';
 import { useToast } from './useToast';
 import { useSearchStore } from '../stores/searchStore';
 import { useSettingsStore } from '../stores/settingsStore';
@@ -13,13 +13,13 @@ import {
 } from '../services/db/imageRepo';
 import { backfillParameterColumns } from '../services/db/maintenanceRepo';
 import { useLibraryStore } from '../stores/libraryStore';
-import { patchImageFlagsInQueryCaches, restoreImagesInQueryCaches } from '../utils/imageQueryCache';
+import { patchImageFlagsInQueryCaches, restoreImagesInQueryCaches, updateImagesQueryCaches } from '../utils/imageQueryCache';
 import { applyOptimisticPinOrder } from '../utils/imageOptimisticUpdates';
 import type { ImagesQueryKey } from './useImagesQuery';
 import type { ActiveImageStateAdapter } from './activeImageState';
 
 interface AppActionFileOps {
-    deleteImages: (ids: string[]) => void | Promise<void>;
+    deleteImages: (ids: string[]) => Promise<boolean>;
     exportImages: (filename: string, ids: Set<string> | string[], destinationFolder: string, onComplete?: () => void) => Promise<void>;
     recoverMetadata?: (targetId: string, style: RecoveryStyle) => Promise<AIImage | null>;
 }
@@ -172,8 +172,9 @@ export const useAppActions = ({
         }
     }, [addToast, queryClient, refreshCollectionsAfterImageFlagChange, setImages, activeImageState]);
 
-    const executeDeleteByIds = React.useCallback((ids: string[], targetDeleteId: string | null) => {
-        fileOps.deleteImages(ids);
+    const executeDeleteByIds = React.useCallback(async (ids: string[], targetDeleteId: string | null) => {
+        const deleted = await fileOps.deleteImages(ids);
+        if (!deleted) return;
 
         if (targetDeleteId) {
             const idx = viewerImages.findIndex(img => img.id === targetDeleteId);
@@ -194,9 +195,9 @@ export const useAppActions = ({
         setPendingViewerDeleteId(null);
     }, [fileOps, viewerImages, setViewerSessionImages, setSelectedImageIndex, setSelectedIds, closeModal, setPendingViewerDeleteId, activeImageState]);
 
-    const executeDelete = React.useCallback(() => {
+    const executeDelete = React.useCallback(async () => {
         const ids = pendingViewerDeleteId ? [pendingViewerDeleteId] : Array.from(selectedIds);
-        executeDeleteByIds(ids, pendingViewerDeleteId);
+        await executeDeleteByIds(ids, pendingViewerDeleteId);
     }, [pendingViewerDeleteId, selectedIds, executeDeleteByIds]);
 
     const requestDeleteForId = React.useCallback((id: string) => {
@@ -206,7 +207,7 @@ export const useAppActions = ({
             return;
         }
 
-        executeDeleteByIds([id], id);
+        void executeDeleteByIds([id], id);
     }, [settings.confirmDelete, openModal, setPendingViewerDeleteId, executeDeleteByIds]);
 
     const handleDeleteViewerImage = (id: string) => {
@@ -231,7 +232,7 @@ export const useAppActions = ({
 
         void persistFavoriteChanges(ids, anyUnfavorite, previousImages);
 
-        addToast(`${anyUnfavorite ? 'Favorited' : 'Unfavorited'} ${selectedIds.size} images`, 'success');
+        addToast(`${anyUnfavorite ? 'Favorited' : 'Unfavorited'} ${selectedIds.size} ${selectedIds.size === 1 ? 'item' : 'items'}`, 'success');
     };
 
     const handleFavoriteImage = (id: string, options: SingleImageActionOptions = {}) => {
@@ -269,7 +270,7 @@ export const useAppActions = ({
             reorderQueryKey: imagesQueryKey
         });
 
-        addToast(`${anyUnpinned ? 'Pinned' : 'Unpinned'} ${selectedIds.size} images`, 'info');
+        addToast(`${anyUnpinned ? 'Pinned' : 'Unpinned'} ${selectedIds.size} ${selectedIds.size === 1 ? 'item' : 'items'}`, 'info');
         void persistPinChanges(ids, anyUnpinned, previousImages, nextImages, 'Failed to update pinned images');
         // await queryClient.invalidateQueries({ queryKey: ['libraryStats'] });
     };
@@ -286,16 +287,22 @@ export const useAppActions = ({
 
         if (idsToToggle.size === 0) return;
 
-        setImages(prev => prev.map(img => {
-            if (idsToToggle.has(img.id)) {
-                let newValue = overrideValue;
-                if (newValue === undefined) {
-                    newValue = !img.userMasked;
-                }
-                return { ...img, userMasked: newValue !== null ? newValue : undefined };
+        const updateMaskedImage = (image: AIImage): AIImage => {
+            if (!idsToToggle.has(image.id)) return image;
+
+            let newValue = overrideValue;
+            if (newValue === undefined) {
+                const currentImage = images.find(candidate => candidate.id === image.id);
+                if (!currentImage) return image;
+                newValue = !currentImage.userMasked;
             }
-            return img;
-        }));
+
+            const userMasked = newValue !== null ? newValue : undefined;
+            return image.userMasked === userMasked ? image : { ...image, userMasked };
+        };
+
+        setImages(prev => prev.map(updateMaskedImage));
+        updateImagesQueryCaches(queryClient, updateMaskedImage);
 
         const promises: Promise<void>[] = [];
 
@@ -325,10 +332,10 @@ export const useAppActions = ({
         const count = idsToToggle.size;
         const s = count === 1 ? '' : 's';
 
-        if (overrideValue === true) message = `${count} image${s} Manually Masked`;
-        else if (overrideValue === false) message = `${count} image${s} Unmasked`;
-        else if (overrideValue === null) message = `${count} image${s} Reset to Auto Mask`;
-        else message = `${count} image${s} Mask Toggled`;
+        if (overrideValue === true) message = `${count} item${s} Manually Masked`;
+        else if (overrideValue === false) message = `${count} item${s} Unmasked`;
+        else if (overrideValue === null) message = `${count} item${s} Reset to Auto Mask`;
+        else message = `${count} item${s} Mask Toggled`;
 
         addToast(message, 'info');
     };
@@ -350,6 +357,12 @@ export const useAppActions = ({
         const resolvedTargetId = resolveMetadataRecoveryTargetId(targetId);
         if (!resolvedTargetId) {
             addToast('Select an image before starting Prompt Recovery.', 'error');
+            return;
+        }
+        const target = viewerImages.find(image => image.id === resolvedTargetId)
+            ?? images.find(image => image.id === resolvedTargetId);
+        if (target && isVideoAsset(target)) {
+            addToast('Prompt Recovery is currently image-only.', 'info');
             return;
         }
 

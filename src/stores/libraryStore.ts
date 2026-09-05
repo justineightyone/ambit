@@ -52,6 +52,7 @@ export type ThumbnailOptimizationDetailProfile = 'quiet' | 'balanced' | 'fast';
 export interface ThumbnailOptimizationDetails {
     checked: number;
     optimized: number;
+    missing?: number;
     reused: number;
     failed: number;
     skipped: number;
@@ -59,6 +60,7 @@ export interface ThumbnailOptimizationDetails {
     batchMs: number;
     dbMs: number;
     encodeMs: number;
+    candidateFetchMs?: number;
     profile: ThumbnailOptimizationDetailProfile;
     phase: string;
     isThrottled: boolean;
@@ -67,6 +69,7 @@ export interface ThumbnailOptimizationDetails {
 export interface ThumbnailOptimizationRunSummary {
     checked: number;
     optimized: number;
+    missing?: number;
     reused: number;
     failed: number;
     skipped: number;
@@ -222,6 +225,7 @@ interface LibraryState {
     lastBackgroundHealingRun: ThumbnailOptimizationRunSummary | null;
     backgroundHealingPaused: boolean;
     thumbnailOptimizationRetrySignal: number;
+    thumbnailOptimizationCancelSignal: number;
     thumbnailMaintenanceOperation: ThumbnailMaintenanceOperation | null;
 
     // Background Metadata Refresh State
@@ -286,6 +290,7 @@ interface LibraryState {
     setLastBackgroundHealingRun: (summary: ThumbnailOptimizationRunSummary | null) => void;
     setBackgroundHealingPaused: (val: boolean) => void;
     requestThumbnailOptimizationRun: () => void;
+    requestThumbnailOptimizationCancel: () => void;
     setThumbnailMaintenanceOperation: (operation: ThumbnailMaintenanceOperation | null) => void;
 
     // Background Metadata Refresh Actions
@@ -352,6 +357,7 @@ export const useLibraryStore = create<LibraryState>((set) => ({
     lastBackgroundHealingRun: null,
     backgroundHealingPaused: false,
     thumbnailOptimizationRetrySignal: 0,
+    thumbnailOptimizationCancelSignal: 0,
     thumbnailMaintenanceOperation: null,
 
     // Background Metadata Refresh State
@@ -573,6 +579,9 @@ export const useLibraryStore = create<LibraryState>((set) => ({
     setBackgroundHealingPaused: (val) => set({ backgroundHealingPaused: val }),
     requestThumbnailOptimizationRun: () => set((state) => ({
         thumbnailOptimizationRetrySignal: state.thumbnailOptimizationRetrySignal + 1
+    })),
+    requestThumbnailOptimizationCancel: () => set((state) => ({
+        thumbnailOptimizationCancelSignal: state.thumbnailOptimizationCancelSignal + 1
     })),
     setThumbnailMaintenanceOperation: (operation) => set({ thumbnailMaintenanceOperation: operation }),
 

@@ -22,6 +22,7 @@ const mockRebuildFacetCache = vi.fn().mockResolvedValue(0);
 const mockRevertImageMetadata = vi.fn();
 const mockUpdateImageNotesCol = vi.fn();
 const mockRebuildFacetCacheIncremental = vi.fn();
+const mockRefreshFacetCacheForResourcesStrict = vi.fn();
 const mockIncrementFacetCacheVersion = vi.fn();
 const mockResolveExactDuplicateGroups = vi.fn();
 
@@ -35,6 +36,7 @@ vi.mock('../../services/db/imageRepo', () => ({
     updateImageNotesCol: (...args: any[]) => mockUpdateImageNotesCol(...args),
     rebuildFacetCache: (...args: any[]) => mockRebuildFacetCache(...args),
     rebuildFacetCacheIncremental: (...args: any[]) => mockRebuildFacetCacheIncremental(...args),
+    refreshFacetCacheForResourcesStrict: (...args: any[]) => mockRefreshFacetCacheForResourcesStrict(...args),
 }));
 
 vi.mock('../../services/db/exactDuplicateRepo', () => ({
@@ -92,6 +94,18 @@ describe('useAppHandlers', () => {
         mockUpdateImageNotesCol.mockResolvedValue(undefined);
         mockRebuildFacetCache.mockResolvedValue(0);
         mockRebuildFacetCacheIncremental.mockResolvedValue(0);
+        mockRefreshFacetCacheForResourcesStrict.mockResolvedValue(0);
+        const lifecycleResult = (ids: string[]) => ({
+            affectedIds: ids,
+            notFoundIds: [],
+            membershipWarningIds: [],
+            touchedResources: {
+                checkpoints: ['Unknown'], loras: [], embeddings: [], hypernetworks: [],
+                controlNets: [], ipAdapters: [], tools: ['Unknown'],
+            },
+        });
+        mockRemoveImagesFromLibrary.mockImplementation(async (ids: string[]) => lifecycleResult(ids));
+        mockRestoreRemovedImages.mockImplementation(async (ids: string[]) => lifecycleResult(ids));
         mockRefreshHiddenAvailability.mockResolvedValue(undefined);
         mockResolveExactDuplicateGroups.mockResolvedValue({
             resolvedGroups: 1,
@@ -99,9 +113,13 @@ describe('useAppHandlers', () => {
             keepers: [{ id: 'img1', isFavorite: true, isPinned: true, userMasked: null }],
         });
         mockDeleteRemovedImagesFromDisk.mockResolvedValue({
-            deletedIds: ['img1'],
+            clearedIds: ['img1'],
+            trashedIds: ['img1'],
+            alreadyMissingIds: [],
             failedIds: [],
-            thumbnailWarningIds: []
+            cleanupPendingIds: [],
+            thumbnailWarningIds: [],
+            notFoundIds: [],
         });
     });
 
@@ -125,6 +143,25 @@ describe('useAppHandlers', () => {
         expect(mockAddToast).toHaveBeenCalledWith('Updated', 'success');
     });
 
+    it('ignores unchanged prompt, model, and note values', async () => {
+        const { result } = renderHandlers();
+
+        await act(async () => {
+            await result.current.handleUpdatePrompt('img1', 'A cat');
+            await result.current.handleUpdateNegativePrompt('img1', 'low res');
+            await result.current.handleUpdateModel('img1', 'Model A');
+            await result.current.handleUpdateModel('img1', '   ');
+            await result.current.handleUpdateTool('img1', GeneratorTool.AUTOMATIC1111);
+            await result.current.handleUpdateNotes('img1', '');
+        });
+
+        expect(mockSetImages).not.toHaveBeenCalled();
+        expect(mockUpdateImageMetadataFields).not.toHaveBeenCalled();
+        expect(mockUpdateImageNotesCol).not.toHaveBeenCalled();
+        expect(mockRebuildFacetCacheIncremental).not.toHaveBeenCalled();
+        expect(mockAddToast).not.toHaveBeenCalled();
+    });
+
     it('should handle grouping images into a stack', () => {
         const { result } = renderHandlers();
 
@@ -141,6 +178,11 @@ describe('useAppHandlers', () => {
 
     it('should handle remove from library', async () => {
         const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries');
+        const queryKey = ['images', { scope: 'library' }] as const;
+        queryClient.setQueryData(queryKey, {
+            pages: [{ images: mockImages, totalCount: 1, globalCount: 1 }],
+            pageParams: [undefined],
+        });
         const { result } = renderHandlers();
 
         await act(async () => {
@@ -150,7 +192,52 @@ describe('useAppHandlers', () => {
         expect(mockRemoveImagesFromLibrary).toHaveBeenCalledWith(['img1']);
         expect(mockSetImages).toHaveBeenCalled();
         expect(mockRefreshMaintenanceCounts).toHaveBeenCalled();
+        expect(queryClient.getQueryData<{
+            pages: Array<{ images: AIImage[]; totalCount: number; globalCount: number }>;
+        }>(queryKey)?.pages[0]).toMatchObject({ images: [], totalCount: 0, globalCount: 0 });
+        expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['images'] });
         expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['invoke-image-references'] });
+    });
+
+    it('does not change local state when remove persistence fails', async () => {
+        const failure = new Error('database unavailable');
+        const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+        mockRemoveImagesFromLibrary.mockRejectedValueOnce(failure);
+        const { result } = renderHandlers();
+
+        try {
+            await act(async () => {
+                await expect(result.current.handleRemoveFromLibrary(['img1'])).rejects.toThrow(failure);
+            });
+
+            expect(mockSetImages).not.toHaveBeenCalled();
+            expect(mockAddToast).toHaveBeenCalledWith(
+                'Could not remove the selected items. The library was left unchanged.',
+                'error'
+            );
+        } finally {
+            errorSpy.mockRestore();
+        }
+    });
+
+    it('keeps a committed removal successful when reference refresh fails', async () => {
+        const refreshError = new Error('refresh unavailable');
+        const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+        vi.spyOn(queryClient, 'invalidateQueries').mockRejectedValueOnce(refreshError);
+        const { result } = renderHandlers();
+
+        try {
+            await act(async () => result.current.handleRemoveFromLibrary(['img1']));
+
+            expect(dispatchedImages).toEqual([]);
+            expect(mockAddToast).toHaveBeenCalledWith('Removed 1 item from the library', 'success');
+            expect(mockAddToast).toHaveBeenCalledWith(
+                'Items were removed, but some views may need a refresh.',
+                'warning'
+            );
+        } finally {
+            errorSpy.mockRestore();
+        }
     });
 
     it.each([false, true])(
@@ -163,8 +250,14 @@ describe('useAppHandlers', () => {
                 invokeImageCategory: 'control',
             };
             let isRestored = false;
-            mockRestoreRemovedImages.mockImplementationOnce(async () => {
+            mockRestoreRemovedImages.mockImplementationOnce(async (ids: string[]) => {
                 isRestored = true;
+                return {
+                    affectedIds: ids,
+                    notFoundIds: [],
+                    membershipWarningIds: [],
+                    touchedResources: { checkpoints: [], loras: [], embeddings: [], hypernetworks: [], controlNets: [], ipAdapters: [], tools: [] },
+                };
             });
             const queryKey = ['images', { showInvokeImageAssets }] as const;
             const emptyResult: {
@@ -209,6 +302,11 @@ describe('useAppHandlers', () => {
     );
 
     it('should handle delete file for removed items', async () => {
+        const queryKey = ['images', { scope: 'stale-library' }] as const;
+        queryClient.setQueryData(queryKey, {
+            pages: [{ images: mockImages, totalCount: 1, globalCount: 1 }],
+            pageParams: [undefined],
+        });
         const { result } = renderHandlers();
 
         await act(async () => {
@@ -216,13 +314,52 @@ describe('useAppHandlers', () => {
         });
 
         expect(mockDeleteRemovedImagesFromDisk).toHaveBeenCalledWith(['img1']);
+        expect(dispatchedImages).toEqual([]);
+        expect(queryClient.getQueryData<{
+            pages: Array<{ images: AIImage[]; totalCount: number; globalCount: number }>;
+        }>(queryKey)?.pages[0]).toMatchObject({ images: [], totalCount: 0, globalCount: 0 });
+    });
+
+    it('keeps a committed disk deletion successful when gallery refresh fails', async () => {
+        const refreshError = new Error('refresh unavailable');
+        const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+        vi.spyOn(queryClient, 'invalidateQueries').mockRejectedValueOnce(refreshError);
+        const { result } = renderHandlers();
+
+        try {
+            await act(async () => {
+                await expect(result.current.handleDeleteFile(['img1'])).resolves.toMatchObject({
+                    clearedIds: ['img1'],
+                });
+            });
+
+            expect(dispatchedImages).toEqual([]);
+            expect(mockAddToast).toHaveBeenCalledWith(
+                'Moved 1 file to OS trash and removed it from Ambit',
+                'success'
+            );
+            expect(mockAddToast).toHaveBeenCalledWith(
+                'Files were deleted, but some views may need a refresh.',
+                'warning'
+            );
+            expect(mockAddToast).not.toHaveBeenCalledWith(
+                'Could not finish deleting the selected files. The Removed entries were kept.',
+                'error'
+            );
+        } finally {
+            errorSpy.mockRestore();
+        }
     });
 
     it('should show warning toast when removed delete partially fails', async () => {
         mockDeleteRemovedImagesFromDisk.mockResolvedValue({
-            deletedIds: ['img1'],
+            clearedIds: ['img1'],
+            trashedIds: ['img1'],
+            alreadyMissingIds: [],
             failedIds: ['img2'],
-            thumbnailWarningIds: []
+            cleanupPendingIds: [],
+            thumbnailWarningIds: [],
+            notFoundIds: [],
         });
         const { result } = renderHandlers();
 
@@ -230,7 +367,7 @@ describe('useAppHandlers', () => {
             await result.current.handleDeleteFile(['img1', 'img2']);
         });
 
-        expect(mockAddToast).toHaveBeenCalledWith(expect.stringContaining('Deleted 1 file'), 'warning');
+        expect(mockAddToast).toHaveBeenCalledWith(expect.stringContaining('still need attention'), 'warning');
     });
 
     it('reloads the reverted image into local state and query caches', async () => {
@@ -321,6 +458,20 @@ describe('useAppHandlers', () => {
         expect(mockAddToast).toHaveBeenCalledWith('Saved', 'success');
     });
 
+    it('rolls back notes and reports an error when persistence fails', async () => {
+        dispatchedImages = [mockImages[0], { ...mockImages[0], id: 'img2' }];
+        mockUpdateImageNotesCol.mockRejectedValueOnce(new Error('missing row'));
+        const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+        const { result } = renderHandlers();
+
+        await act(async () => result.current.handleUpdateNotes('img1', 'note'));
+
+        expect(dispatchedImages.map(image => image.notes)).toEqual([undefined, undefined]);
+        expect(mockAddToast).toHaveBeenCalledWith('Failed to save notes', 'error');
+        expect(error).toHaveBeenCalledWith('[Notes] Failed to persist notes', expect.any(Error));
+        error.mockRestore();
+    });
+
     it('applies metadata edits to a directly opened asset outside the gallery', async () => {
         let directImage: AIImage = {
             ...mockImages[0],
@@ -353,7 +504,13 @@ describe('useAppHandlers', () => {
     });
 
     it('groups only requested images and applies the transactional duplicate result', async () => {
-        dispatchedImages = [mockImages[0], { ...mockImages[0], id: 'img2' }];
+        const duplicate = { ...mockImages[0], id: 'img2' };
+        dispatchedImages = [mockImages[0], duplicate];
+        const queryKey = ['images', { scope: 'library' }] as const;
+        queryClient.setQueryData(queryKey, {
+            pages: [{ images: [mockImages[0], duplicate], totalCount: 2, globalCount: 2 }],
+            pageParams: [undefined],
+        });
         const { result } = renderHandlers();
         act(() => result.current.handleGroupImages(['img1']));
         expect(dispatchedImages[0].groupId).toBeTruthy();
@@ -364,6 +521,13 @@ describe('useAppHandlers', () => {
         expect(mockResolveExactDuplicateGroups).toHaveBeenCalledWith(resolutions);
         expect(dispatchedImages).toHaveLength(1);
         expect(dispatchedImages[0]).toMatchObject({ id: 'img1', isFavorite: true, isPinned: true, userMasked: undefined });
+        expect(queryClient.getQueryData<{
+            pages: Array<{ images: AIImage[]; totalCount: number; globalCount: number }>;
+        }>(queryKey)?.pages[0]).toMatchObject({
+            images: [expect.objectContaining({ id: 'img1', isFavorite: true, isPinned: true, userMasked: undefined })],
+            totalCount: 1,
+            globalCount: 1,
+        });
         expect(mockAddToast).toHaveBeenCalledWith('Moved 1 duplicate to Removed', 'success');
         expect(mockRefreshMaintenanceCounts).toHaveBeenCalled();
     });
@@ -378,7 +542,7 @@ describe('useAppHandlers', () => {
         await act(async () => result.current.handleResolveDuplicate([{ keepId: 'img1', removeIds: ['img2', 'img3'] }]));
         expect(mockAddToast).toHaveBeenCalledWith('Moved 2 duplicates to Removed', 'success');
         await act(async () => result.current.handleRemoveFromLibrary(['img1', 'img2']));
-        expect(mockAddToast).toHaveBeenCalledWith('Removed 2 images from the library', 'success');
+        expect(mockAddToast).toHaveBeenCalledWith('Removed 2 items from the library', 'success');
     });
 
     it('keeps local images unchanged and reports a failed duplicate transaction', async () => {
@@ -435,7 +599,7 @@ describe('useAppHandlers', () => {
         await act(async () => result.current.handleRestoreImages(['img1']));
         expect(mockRefreshHiddenAvailability).toHaveBeenCalledOnce();
         expect(mockSetImages).not.toHaveBeenCalled();
-        expect(mockAddToast).toHaveBeenCalledWith('Restored 1 image to the library', 'success');
+        expect(mockAddToast).toHaveBeenCalledWith('Restored 1 item to the library', 'success');
     });
 
     it('completes restore updates when hidden availability refresh fails', async () => {
@@ -448,12 +612,38 @@ describe('useAppHandlers', () => {
             await act(async () => result.current.handleRestoreImages(['img1']));
 
             expect(mockRestoreRemovedImages).toHaveBeenCalledWith(['img1']);
-            expect(mockAddToast).toHaveBeenCalledWith('Restored 1 image to the library', 'success');
+            expect(mockAddToast).toHaveBeenCalledWith('Restored 1 item to the library', 'success');
             expect(mockRefreshMaintenanceCounts).toHaveBeenCalledOnce();
-            expect(mockRebuildFacetCache).toHaveBeenCalledOnce();
+            expect(mockRefreshFacetCacheForResourcesStrict).toHaveBeenCalledOnce();
             expect(errorSpy).toHaveBeenCalledWith(
-                '[Restore] Failed to refresh hidden-content availability after restoring images',
+                '[Restore] Restored images, but failed to refresh dependent views',
                 refreshError
+            );
+            expect(mockAddToast).toHaveBeenCalledWith(
+                'Items were restored, but some views may need a refresh.',
+                'warning'
+            );
+        } finally {
+            errorSpy.mockRestore();
+        }
+    });
+
+    it('reports restore persistence failures without running committed-state refreshes', async () => {
+        const failure = new Error('restore blocked');
+        const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+        mockRestoreRemovedImages.mockRejectedValueOnce(failure);
+        const { result } = renderHandlers();
+
+        try {
+            await act(async () => {
+                await expect(result.current.handleRestoreImages(['img1'])).rejects.toThrow(failure);
+            });
+
+            expect(mockRefreshMaintenanceCounts).not.toHaveBeenCalled();
+            expect(mockRefreshFacetCacheForResourcesStrict).not.toHaveBeenCalled();
+            expect(mockAddToast).toHaveBeenCalledWith(
+                'Could not restore the selected items. Their Removed entries were kept.',
+                'error'
             );
         } finally {
             errorSpy.mockRestore();
@@ -462,17 +652,37 @@ describe('useAppHandlers', () => {
 
     it('covers successful plural deletion, warning cleanup, and total failure', async () => {
         const { result } = renderHandlers();
-        mockDeleteRemovedImagesFromDisk.mockResolvedValueOnce({ deletedIds: ['a', 'b'], failedIds: [], thumbnailWarningIds: [] });
+        mockDeleteRemovedImagesFromDisk.mockResolvedValueOnce({ clearedIds: ['a', 'b'], trashedIds: ['a', 'b'], alreadyMissingIds: [], failedIds: [], cleanupPendingIds: [], thumbnailWarningIds: [], notFoundIds: [] });
         await act(async () => result.current.handleDeleteFile(['a', 'b']));
         expect(mockAddToast).toHaveBeenCalledWith('Moved 2 files to OS trash and removed them from Ambit', 'success');
 
-        mockDeleteRemovedImagesFromDisk.mockResolvedValueOnce({ deletedIds: ['a'], failedIds: [], thumbnailWarningIds: ['a'] });
+        mockDeleteRemovedImagesFromDisk.mockResolvedValueOnce({ clearedIds: ['a'], trashedIds: ['a'], alreadyMissingIds: [], failedIds: [], cleanupPendingIds: [], thumbnailWarningIds: ['a'], notFoundIds: [] });
         await act(async () => result.current.handleDeleteFile(['a']));
         expect(mockAddToast).toHaveBeenCalledWith(expect.stringContaining('thumbnail cleanup warnings'), 'warning');
 
-        mockDeleteRemovedImagesFromDisk.mockResolvedValueOnce({ deletedIds: [], failedIds: ['a'], thumbnailWarningIds: [] });
+        mockDeleteRemovedImagesFromDisk.mockResolvedValueOnce({ clearedIds: [], trashedIds: [], alreadyMissingIds: [], failedIds: ['a'], cleanupPendingIds: [], thumbnailWarningIds: [], notFoundIds: [] });
         await act(async () => result.current.handleDeleteFile(['a']));
-        expect(mockAddToast).toHaveBeenCalledWith('Failed to move selected files to OS trash.', 'error');
+        expect(mockAddToast).toHaveBeenCalledWith('Failed to move selected files to OS trash. The Removed entries were kept.', 'error');
+    });
+
+    it('does not report success when the selected Removed entries no longer exist', async () => {
+        mockDeleteRemovedImagesFromDisk.mockResolvedValueOnce({
+            clearedIds: [],
+            trashedIds: [],
+            alreadyMissingIds: [],
+            failedIds: [],
+            cleanupPendingIds: [],
+            thumbnailWarningIds: [],
+            notFoundIds: ['stale-entry'],
+        });
+        const { result } = renderHandlers();
+
+        await act(async () => result.current.handleDeleteFile(['stale-entry']));
+
+        expect(mockAddToast).toHaveBeenCalledWith(
+            'Removed 0 entries from Ambit; 1 selected entry was already unavailable.',
+            'warning'
+        );
     });
 
     it('explains the Removed-tab trash workflow', async () => {
@@ -514,10 +724,10 @@ describe('useAppHandlers', () => {
 
     it('uses plural warning wording for partially deleted multiple files', async () => {
         mockDeleteRemovedImagesFromDisk.mockResolvedValueOnce({
-            deletedIds: ['a', 'b'], failedIds: ['c'], thumbnailWarningIds: []
+            clearedIds: ['a', 'b'], trashedIds: ['a', 'b'], alreadyMissingIds: [], failedIds: ['c'], cleanupPendingIds: [], thumbnailWarningIds: [], notFoundIds: []
         });
         const { result } = renderHandlers();
         await act(async () => result.current.handleDeleteFile(['a', 'b', 'c']));
-        expect(mockAddToast).toHaveBeenCalledWith(expect.stringContaining('Deleted 2 files from Ambit'), 'warning');
+        expect(mockAddToast).toHaveBeenCalledWith(expect.stringContaining('Removed 2 entries from Ambit'), 'warning');
     });
 });

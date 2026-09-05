@@ -104,16 +104,18 @@ interface AppLayoutProps {
     // Grid/View Props
     scrollContainerRef: React.RefObject<HTMLDivElement | null>;
     images: AIImage[];
+    modelOptions?: readonly string[];
     handlers: AppHandlers;
     setViewingImageId: (id: string | null) => void;
     onMaintenanceViewerOpenChange: (isOpen: boolean) => void;
     onOpenReferencedImage: (imageId: string) => Promise<boolean>;
+    onViewerSearch: (term: string) => void;
     isViewerShortcutBlocked: boolean;
     toggleFavorite: (id: string) => void | Promise<void>;
     actions: ReturnType<typeof useAppActions>;
     availableTags: string[];
     selectedIds: Set<string>;
-    handleImageClick: (e: React.MouseEvent, id: string, index: number, callback: (index: number) => void) => void;
+    handleImageClick: (e: React.MouseEvent, id: string, index: number, callback: (index: number) => void, revealGranted?: boolean) => void;
     setSelectedImageIndex: (index: number | null) => void;
     handleSelectionToggle: (e: React.MouseEvent | undefined, id: string) => void;
     activeCollection: Collection | null | undefined;
@@ -141,7 +143,8 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
     viewMode, changeViewMode, searchProps, layoutMode, setLayoutMode,
     sortOption, setSortOption, displayedCount, scopeTotal, scopeName,
     fileOps, onOpenImportModal, workspaceRef, scrollContainerRef,
-    handlers, setViewingImageId, onMaintenanceViewerOpenChange, onOpenReferencedImage, isViewerShortcutBlocked,
+    handlers, setViewingImageId, onMaintenanceViewerOpenChange, onOpenReferencedImage, onViewerSearch, isViewerShortcutBlocked,
+    modelOptions = [],
     actions, availableTags, selectedIds,
     handleImageClick, setSelectedImageIndex, handleSelectionToggle,
     activeCollection, activeSmartCollection, handleRangeSelection,
@@ -255,6 +258,7 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
         settings.thumbnailSize ?? 'default-size',
         sortOption,
         filters.collectionId ?? 'library',
+        filters.mediaType ?? 'all-media',
         filters.favoritesOnly ? 'favorites' : 'all-images',
         filters.pinnedOnly ? 'pinned-only' : 'unpinned-scope',
         filters.showGrids ? 'show-grids' : 'hide-grids',
@@ -265,6 +269,7 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
         settings.thumbnailSize,
         sortOption,
         filters.collectionId,
+        filters.mediaType,
         filters.favoritesOnly,
         filters.pinnedOnly,
         filters.showGrids,
@@ -283,7 +288,7 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
             selectedIds={selectedIds}
             maskedKeywords={effectiveMaskedKeywords}
             setImages={handlers.setImages}
-            onClick={(e, id, idx) => handleImageClick(e, id, idx, setSelectedImageIndex)}
+            onClick={(e, id, idx, revealGranted) => handleImageClick(e, id, idx, setSelectedImageIndex, revealGranted)}
             onToggleSelection={handleSelectionToggle}
             onToggleFavorite={(e, id) => toggleFavorite(id)}
             onTogglePin={(e, id) => {
@@ -329,7 +334,10 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
                     }
                 }}
                 onRenameCollection={colOps.renameCollection}
-                onDeleteCollection={colOps.deleteCollection}
+                onDeleteCollection={(id) => {
+                    modals.setCollectionToDelete(id);
+                    modals.openModal('deleteCollection');
+                }}
                 onToggleArchiveCollection={colOps.toggleArchiveCollection}
                 onTogglePinCollection={colOps.togglePinCollection}
                 onSetCollectionColor={colOps.setCollectionColor}
@@ -356,7 +364,7 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
                 ref={workspaceRef}
                 tabIndex={-1}
                 aria-label="Library workspace"
-                className="flex-1 flex flex-col min-w-0 bg-white dark:bg-zinc-900/95 backdrop-blur-xl rounded-2xl shadow-2xl shadow-black/20 border border-zinc-200 dark:border-white/10 overflow-hidden relative"
+                className="flex-1 flex flex-col min-w-0 bg-white dark:bg-zinc-900/95 backdrop-blur-xl rounded-2xl shadow-2xl shadow-black/20 border border-zinc-200 dark:border-white/10 overflow-hidden relative outline-none"
             >
                 <div className="absolute inset-0 pointer-events-none bg-[radial-gradient(circle_at_50%_0%,rgba(139,174,124,0.08),transparent_70%)] dark:bg-[radial-gradient(circle_at_50%_0%,rgba(139,174,124,0.15),transparent_60%)] z-10" />
 
@@ -423,9 +431,20 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
                                         onRegenerateThumbnails={fileOps.regenerateThumbnails}
                                         maskedKeywords={effectiveMaskedKeywords}
                                         onUpdatePrompt={handlers.handleUpdatePrompt}
+                                        onUpdateNegativePrompt={handlers.handleUpdateNegativePrompt}
                                         onUpdateModel={handlers.handleUpdateModel}
                                         onUpdateTool={handlers.handleUpdateTool}
+                                        onUpdateGenerationMode={(id, mode) => handlers.handleUpdateVideoGenerationMode(id, mode)}
                                         onUpdateNotes={(id, n) => { handlers.handleUpdateNotes(id, n); }}
+                                        onRevertMetadata={handlers.handleRevertMetadata}
+                                        onSearch={(term) => {
+                                            onViewerSearch(term);
+                                            changeViewMode('grid');
+                                        }}
+                                        onOpenSettings={() => {
+                                            modals.setInitialSettingsTab('intelligence');
+                                            modals.openModal('settings');
+                                        }}
                                         onRecoverMetadata={(targetId, onRecovered) => {
                                             actions.openMetadataRecovery(targetId, onRecovered);
                                         }}
@@ -436,6 +455,7 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
                                         onViewerOpenChange={onMaintenanceViewerOpenChange}
                                         onOpenReferencedImage={onOpenReferencedImage}
                                         isShortcutBlocked={isViewerShortcutBlocked}
+                                        modelOptions={modelOptions}
                                     />
                                 </React.Suspense>
                             ) : (images.length > 0 || isSearchPending) ? (
@@ -449,7 +469,7 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
                                             thumbnailSize={settings.thumbnailSize}
                                             sortOption={sortOption}
                                             maskedKeywords={effectiveMaskedKeywords}
-                                            onImageClick={(e, id, index) => handleImageClick(e, id, index, setSelectedImageIndex)}
+                                            onImageClick={(e, id, index, revealGranted) => handleImageClick(e, id, index, setSelectedImageIndex, revealGranted)}
                                             onSelectionToggle={handleSelectionToggle}
                                             onToggleFavorite={(e, id) => { toggleFavorite(id); }}
                                             onTogglePin={(e, id) => {
@@ -473,7 +493,7 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
                                                     selectedIds={selectedIds}
                                                     maskedKeywords={effectiveMaskedKeywords}
                                                     setImages={handlers.setImages}
-                                                    onImageClick={(e, id, index) => handleImageClick(e, id, index, setSelectedImageIndex)}
+                                                    onImageClick={(e, id, index, revealGranted) => handleImageClick(e, id, index, setSelectedImageIndex, revealGranted)}
                                                     onToggleSelection={handleSelectionToggle}
                                                     onToggleFavorite={(e, id) => toggleFavorite(id)}
                                                     onTogglePin={(e, id) => {
@@ -534,7 +554,7 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
                                         onClick={clearAllFilters}
                                         className="px-8 py-3.5 bg-zinc-800 dark:bg-white/10 hover:bg-zinc-700 dark:hover:bg-white/20 text-white rounded-2xl font-bold transition-all hover:scale-105 active:scale-95 flex items-center gap-2"
                                     >
-                                        Clear All Filters
+                                        Clear filters
                                     </button>
                                 </div>
                             )}

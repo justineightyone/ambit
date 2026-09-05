@@ -31,7 +31,7 @@ const THINKING_MODE_LABELS: Record<AiThinkingMode, string> = {
     dynamic: 'Dynamic',
 };
 
-const selectClassName = "w-full bg-gray-50 dark:bg-black/20 border border-gray-200 dark:border-white/10 rounded-xl p-3 text-sm focus:border-sage-500 outline-none text-gray-700 dark:text-gray-300 transition-colors";
+const selectClassName = "w-full rounded-xl border border-gray-200 bg-gray-50 p-3 text-sm text-gray-700 outline-none transition-colors focus:border-amethyst-500 dark:border-white/10 dark:bg-black/20 dark:text-gray-300";
 
 export const IntelligenceTab: React.FC<TabProps> = React.memo(({ settings, setSettings }) => {
     const { addToast } = useToast();
@@ -183,19 +183,19 @@ export const IntelligenceTab: React.FC<TabProps> = React.memo(({ settings, setSe
         if (current && !options.includes(current)) options.unshift(current);
         return (
             <>
-                {includeInherit && <option value="" className="dark:bg-sage-900">Same as text model</option>}
-                {!includeInherit && !current && <option value="" className="dark:bg-sage-900">Select a model…</option>}
+                {includeInherit && <option value="" className="dark:bg-zinc-900">Same as text model</option>}
+                {!includeInherit && !current && <option value="" className="dark:bg-zinc-900">Select a model…</option>}
                 {options.map(id => (
-                    <option key={id} value={id} className="dark:bg-sage-900">{id}</option>
+                    <option key={id} value={id} className="dark:bg-zinc-900">{id}</option>
                 ))}
             </>
         );
     };
 
     return (
-        <div className="space-y-6 max-w-2xl animate-in fade-in slide-in-from-bottom-2 duration-300">
+        <div className="space-y-6 max-w-2xl">
             <section className="bg-white dark:bg-white/5 border border-gray-200 dark:border-white/5 rounded-xl p-6 shadow-sm">
-                <h4 className="text-xs font-bold text-sage-500 uppercase tracking-wider mb-6 flex items-center gap-2">
+                <h4 className="mb-6 flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-amethyst-600 dark:text-amethyst-300">
                     <FlaskConical className="w-4 h-4" /> Ambit Intelligence
                 </h4>
 
@@ -204,8 +204,8 @@ export const IntelligenceTab: React.FC<TabProps> = React.memo(({ settings, setSe
                         onClick={handleAIToggle}
                         className="flex items-center justify-between cursor-pointer group"
                     >
-                        <div>
-                            <div className="text-base font-medium text-gray-900 dark:text-gray-200 group-hover:text-sage-500 transition-colors">Enable AI Features</div>
+                        <div className="min-w-0 pr-4">
+                            <div className="text-base font-medium text-gray-900 transition-colors group-hover:text-amethyst-600 dark:text-gray-200 dark:group-hover:text-amethyst-300">Enable AI Features</div>
                             <div className="text-sm text-gray-500">Unlocks natural language search, prompt analysis, and metadata recovery via a local AI server or the Gemini API.</div>
                         </div>
                         <button
@@ -213,14 +213,14 @@ export const IntelligenceTab: React.FC<TabProps> = React.memo(({ settings, setSe
                             role="switch"
                             aria-checked={settings.enableAI}
                             aria-label="Enable AI Features"
-                            className={`w-12 h-7 rounded-full relative transition-colors ${settings.enableAI ? 'bg-sage-600' : 'bg-gray-200 dark:bg-white/10'}`}
+                            className={`relative h-7 w-12 shrink-0 rounded-full transition-colors ${settings.enableAI ? 'bg-amethyst-600' : 'bg-gray-200 dark:bg-white/10'}`}
                         >
                             <div className={`absolute top-1 w-5 h-5 bg-white rounded-full shadow-sm transition-all ${settings.enableAI ? 'left-6' : 'left-1'}`} />
                         </button>
                     </div>
 
                     {settings.enableAI && (
-                        <div className="animate-in fade-in slide-in-from-top-2 space-y-4">
+                        <div className="animate-in fade-in duration-150 motion-reduce:animate-none space-y-4">
                             <div>
                                 <label className="text-sm font-bold text-gray-900 dark:text-white block mb-2">AI Provider</label>
                                 <div className="grid grid-cols-2 gap-2">
@@ -228,8 +228,8 @@ export const IntelligenceTab: React.FC<TabProps> = React.memo(({ settings, setSe
                                         type="button"
                                         onClick={() => handleProviderChange('local')}
                                         className={`flex items-center justify-center gap-2 p-3 rounded-xl border text-sm font-medium transition-all ${provider === 'local'
-                                            ? 'border-sage-500 bg-sage-500/10 text-sage-600 dark:text-sage-400'
-                                            : 'border-gray-200 dark:border-white/10 text-gray-500 hover:border-sage-500/50'}`}
+                                            ? 'border-amethyst-500 bg-amethyst-500/10 text-amethyst-600 dark:text-amethyst-300'
+                                            : 'border-gray-200 dark:border-white/10 text-gray-500 hover:border-amethyst-500/50'}`}
                                     >
                                         <Server className="w-4 h-4" /> Local Server
                                     </button>
@@ -237,8 +237,8 @@ export const IntelligenceTab: React.FC<TabProps> = React.memo(({ settings, setSe
                                         type="button"
                                         onClick={() => handleProviderChange('gemini')}
                                         className={`flex items-center justify-center gap-2 p-3 rounded-xl border text-sm font-medium transition-all ${provider === 'gemini'
-                                            ? 'border-sage-500 bg-sage-500/10 text-sage-600 dark:text-sage-400'
-                                            : 'border-gray-200 dark:border-white/10 text-gray-500 hover:border-sage-500/50'}`}
+                                            ? 'border-amethyst-500 bg-amethyst-500/10 text-amethyst-600 dark:text-amethyst-300'
+                                            : 'border-gray-200 dark:border-white/10 text-gray-500 hover:border-amethyst-500/50'}`}
                                     >
                                         <Cloud className="w-4 h-4" /> Gemini API
                                     </button>
@@ -246,7 +246,7 @@ export const IntelligenceTab: React.FC<TabProps> = React.memo(({ settings, setSe
                             </div>
 
                             {provider === 'local' && (
-                                <div className="space-y-4 animate-in fade-in slide-in-from-top-2">
+                                <div className="space-y-4 animate-in fade-in duration-150 motion-reduce:animate-none">
                                     <div>
                                         <label className="text-sm font-bold text-gray-900 dark:text-white block mb-2">Server URL</label>
                                         <div className="flex gap-2">
@@ -256,13 +256,13 @@ export const IntelligenceTab: React.FC<TabProps> = React.memo(({ settings, setSe
                                                 onChange={e => handleBaseUrlChange(e.target.value)}
                                                 placeholder={DEFAULT_LOCAL_AI_BASE_URL}
                                                 spellCheck={false}
-                                                className="flex-1 bg-gray-50 dark:bg-black/20 border border-gray-200 dark:border-white/10 rounded-xl p-3 text-sm focus:border-sage-500 outline-none text-gray-700 dark:text-gray-300 transition-colors font-mono"
+                                                className="flex-1 rounded-xl border border-gray-200 bg-gray-50 p-3 font-mono text-sm text-gray-700 outline-none transition-colors focus:border-amethyst-500 dark:border-white/10 dark:bg-black/20 dark:text-gray-300"
                                             />
                                             <button
                                                 type="button"
                                                 onClick={() => connectLocalServer(baseUrlInput)}
                                                 disabled={isConnecting}
-                                                className="px-4 rounded-xl bg-sage-600 hover:bg-sage-500 text-white text-sm font-medium transition-colors disabled:opacity-50 flex items-center gap-2"
+                                                className="px-4 rounded-xl bg-amethyst-600 hover:bg-amethyst-500 text-white text-sm font-medium transition-colors disabled:opacity-50 flex items-center gap-2"
                                             >
                                                 <RefreshCw className={`w-4 h-4 ${isConnecting ? 'animate-spin' : ''}`} />
                                                 {isConnecting ? 'Connecting…' : 'Connect'}
@@ -275,7 +275,7 @@ export const IntelligenceTab: React.FC<TabProps> = React.memo(({ settings, setSe
                                             <p className="text-xs text-red-500 mt-2 ml-1">{localError}</p>
                                         )}
                                         {localStatus === 'success' && (
-                                            <p className="text-xs text-sage-500 mt-2 ml-1">Connected — {localModels.length} model{localModels.length === 1 ? '' : 's'} available.</p>
+                                            <p className="text-xs text-amethyst-600 dark:text-amethyst-300 mt-2 ml-1">Connected — {localModels.length} model{localModels.length === 1 ? '' : 's'} available.</p>
                                         )}
                                     </div>
 
@@ -324,7 +324,7 @@ export const IntelligenceTab: React.FC<TabProps> = React.memo(({ settings, setSe
                             )}
 
                             {provider === 'gemini' && (
-                                <div className="space-y-4 animate-in fade-in slide-in-from-top-2">
+                                <div className="space-y-4 animate-in fade-in duration-150 motion-reduce:animate-none">
                                     <ApiKeyInput
                                         value={localApiKey}
                                         onChange={handleApiKeyChange}
@@ -361,7 +361,7 @@ export const IntelligenceTab: React.FC<TabProps> = React.memo(({ settings, setSe
                                     />
 
                                     {developerFeaturesEnabled && (
-                                        <div className="pt-2 space-y-4 animate-in fade-in slide-in-from-top-2">
+                                        <div className="pt-2 space-y-4 animate-in fade-in duration-150 motion-reduce:animate-none">
                                             <div>
                                                 <label className="text-sm font-bold text-gray-900 dark:text-white block mb-2 flex items-center gap-2">
                                                     <Cpu className="w-4 h-4 text-gray-400" /> AI Model (Dev Mode)
@@ -372,7 +372,7 @@ export const IntelligenceTab: React.FC<TabProps> = React.memo(({ settings, setSe
                                                     className={selectClassName}
                                                 >
                                                     {AI_MODELS.map(model => (
-                                                        <option key={model.id} value={model.id} className="dark:bg-sage-900">
+                                                        <option key={model.id} value={model.id} className="dark:bg-zinc-900">
                                                             {model.name}
                                                             {model.isExperimental ? ' (Preview)' : ''}
                                                             {model.isLegacy ? ' (Legacy)' : ''}
@@ -394,7 +394,7 @@ export const IntelligenceTab: React.FC<TabProps> = React.memo(({ settings, setSe
                                                     className={selectClassName}
                                                 >
                                                     {supportedThinkingModes.map(mode => (
-                                                        <option key={mode} value={mode} className="dark:bg-sage-900">
+                                                        <option key={mode} value={mode} className="dark:bg-zinc-900">
                                                             {THINKING_MODE_LABELS[mode]}
                                                         </option>
                                                     ))}

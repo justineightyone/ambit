@@ -14,7 +14,11 @@ const mocks = vi.hoisted(() => ({
     selectInvokeOwnerScope: vi.fn(),
     retryInvokeOwnerScope: vi.fn(),
     startInvokeSync: vi.fn(),
+    getSuppressedInvokeCollections: vi.fn(),
+    restoreInvokeCollection: vi.fn(),
+    refreshCollections: vi.fn(),
     isInvokeSyncActive: false,
+    isLiveSyncing: false,
     ownerScopeState: { status: 'ready', discovery: { schemaMode: 'legacy', dbPath: 'D:/Invoke/databases/invokeai.db', imagesRoot: 'D:/Invoke', owners: [], unassignedImageCount: 0 } } as InvokeOwnerScopeState
 }));
 
@@ -22,6 +26,14 @@ vi.mock('@tauri-apps/api/core', () => ({ invoke: mocks.invoke }));
 vi.mock('@tauri-apps/plugin-dialog', () => ({ open: mocks.open }));
 vi.mock('../../../../services/invoke/connection', () => ({ testConnection: mocks.testConnection, diagnoseInvokeAI: mocks.diagnoseInvokeAI }));
 vi.mock('../../../../utils/settingsUtils', () => ({ areDeveloperFeaturesEnabled: () => mocks.developerFeatures }));
+vi.mock('../../../../services/db/collectionRepo', () => ({
+    getSuppressedInvokeCollections: mocks.getSuppressedInvokeCollections,
+    restoreInvokeCollection: mocks.restoreInvokeCollection,
+}));
+vi.mock('../../../../stores/collectionStore', () => ({
+    useCollectionStore: (selector: (state: { refreshCollections: typeof mocks.refreshCollections }) => unknown) =>
+        selector({ refreshCollections: mocks.refreshCollections }),
+}));
 vi.mock('../SyncSection', () => ({ SyncSection: () => <div>sync-section</div> }));
 vi.mock('../../../../contexts/LibraryContext', () => ({
     useLibrary: () => ({
@@ -30,6 +42,7 @@ vi.mock('../../../../contexts/LibraryContext', () => ({
         retryInvokeOwnerScope: mocks.retryInvokeOwnerScope,
         startInvokeSync: mocks.startInvokeSync,
         isInvokeSyncActive: mocks.isInvokeSyncActive,
+        isLiveSyncing: mocks.isLiveSyncing,
     }),
 }));
 
@@ -47,11 +60,15 @@ describe('InvokeAITab', () => {
         vi.clearAllMocks();
         mocks.developerFeatures = true;
         mocks.isInvokeSyncActive = false;
+        mocks.isLiveSyncing = false;
         mocks.ownerScopeState = { status: 'ready', discovery: { schemaMode: 'legacy', dbPath: 'D:/Invoke/databases/invokeai.db', imagesRoot: 'D:/Invoke', owners: [], unassignedImageCount: 0 } };
         mocks.open.mockResolvedValue(null);
         mocks.testConnection.mockResolvedValue({ success: true, message: 'Connected' });
         mocks.diagnoseInvokeAI.mockResolvedValue({ totalInDb: 2, categories: [], origins: [] });
         mocks.invoke.mockResolvedValue({ imageFiles: 2, thumbnailFiles: 1, subfolders: {} });
+        mocks.getSuppressedInvokeCollections.mockResolvedValue([]);
+        mocks.restoreInvokeCollection.mockResolvedValue(undefined);
+        mocks.refreshCollections.mockResolvedValue(undefined);
         vi.spyOn(console, 'error').mockImplementation(() => undefined);
     });
 
@@ -63,6 +80,28 @@ describe('InvokeAITab', () => {
         expect(screen.getByText('sync-section')).toBeTruthy();
     });
 
+    it('restores hidden InvokeAI collections and marks unavailable sources', async () => {
+        mocks.getSuppressedInvokeCollections.mockResolvedValueOnce([{
+            id: 'hidden-board',
+            name: 'Local label',
+            invokeSourceName: 'Upstream label',
+            invokeSourcePresent: false,
+            invokeOwnerId: 'owner-a',
+        }]);
+        render(<InvokeAITab settings={settings('D:/Invoke')} setSettings={vi.fn()} />);
+
+        expect(await screen.findByText('Hidden InvokeAI collections')).toBeTruthy();
+        expect(screen.getByText('Local label')).toBeTruthy();
+        expect(screen.getByText('Source unavailable')).toBeTruthy();
+        fireEvent.click(screen.getByRole('button', { name: 'Restore Local label' }));
+
+        await waitFor(() => expect(mocks.restoreInvokeCollection).toHaveBeenCalledWith('hidden-board'));
+        await waitFor(() => expect(mocks.refreshCollections).toHaveBeenCalledWith(false, {
+            consistency: 'authoritative',
+        }));
+        await waitFor(() => expect(screen.queryByText('Local label')).toBeNull());
+    });
+
     it('locks the configured root while owner visibility is changing', () => {
         mocks.ownerScopeState = {
             status: 'applying',
@@ -70,15 +109,23 @@ describe('InvokeAITab', () => {
                 schemaMode: 'multi_user',
                 dbPath: 'D:/Invoke/databases/invokeai.db',
                 imagesRoot: 'D:/Invoke',
-                owners: [{ ownerId: 'owner-a', imageCount: 1 }],
+                owners: [
+                    { ownerId: 'owner-a', imageCount: 1 },
+                    { ownerId: 'owner-b', imageCount: 1 },
+                ],
                 unassignedImageCount: 0,
             },
             progress: { current: 500, total: 2000, message: 'Updating InvokeAI image details...' },
         };
         render(<InvokeAITab settings={settings('D:/Invoke')} setSettings={vi.fn()} />);
 
-        expect((screen.getByRole('textbox') as HTMLInputElement).disabled).toBe(true);
-        expect((screen.getByText('Browse').closest('button') as HTMLButtonElement).disabled).toBe(true);
+        const rootInput = screen.getByRole('textbox') as HTMLInputElement;
+        const browseButton = screen.getByText('Browse').closest('button') as HTMLButtonElement;
+        expect(rootInput.disabled).toBe(true);
+        expect(rootInput.readOnly).toBe(false);
+        expect(rootInput.getAttribute('aria-disabled')).toBe('true');
+        expect(browseButton.disabled).toBe(true);
+        expect(browseButton.getAttribute('aria-disabled')).toBe('true');
         expect((screen.getByText('Test Connection').closest('button') as HTMLButtonElement).disabled).toBe(true);
         expect(screen.getByRole('status').textContent).toContain('Updating InvokeAI image details...');
         expect(screen.getByRole('status').textContent).toContain('500 / 2,000');
@@ -92,7 +139,10 @@ describe('InvokeAITab', () => {
                 schemaMode: 'multi_user',
                 dbPath: 'D:/Invoke/databases/invokeai.db',
                 imagesRoot: 'D:/Invoke',
-                owners: [{ ownerId: 'owner-a', imageCount: 1 }],
+                owners: [
+                    { ownerId: 'owner-a', imageCount: 1 },
+                    { ownerId: 'owner-b', imageCount: 1 },
+                ],
                 unassignedImageCount: 0,
             },
         };
@@ -106,8 +156,51 @@ describe('InvokeAITab', () => {
         }} setSettings={vi.fn()} />);
 
         expect((screen.getByRole('textbox') as HTMLInputElement).disabled).toBe(true);
-        expect((screen.getByRole('button', { name: /unnamed owner/i }) as HTMLButtonElement).disabled).toBe(true);
+        expect(screen.getAllByRole('button', { name: /unnamed owner/i })
+            .every(button => (button as HTMLButtonElement).disabled)).toBe(true);
         expect(screen.getByText(/locked until synchronization finishes/i)).toBeTruthy();
+    });
+
+    it('keeps owner-scope presentation stable during background Live Watch', () => {
+        mocks.isInvokeSyncActive = true;
+        mocks.isLiveSyncing = true;
+        const setSettings = vi.fn();
+        mocks.ownerScopeState = {
+            status: 'ready',
+            discovery: {
+                schemaMode: 'multi_user',
+                dbPath: 'D:/Invoke/databases/invokeai.db',
+                imagesRoot: 'D:/Invoke',
+                owners: [
+                    { ownerId: 'owner-a', imageCount: 1 },
+                    { ownerId: 'owner-b', imageCount: 1 },
+                ],
+                unassignedImageCount: 0,
+            },
+        };
+        render(<InvokeAITab settings={{
+            ...settings('D:/Invoke'),
+            invokeOwnerSelection: {
+                dbPath: 'D:/Invoke/databases/invokeai.db',
+                mode: 'owner',
+                ownerId: 'owner-a',
+            },
+        }} setSettings={setSettings} />);
+
+        const rootInput = screen.getByRole('textbox') as HTMLInputElement;
+        const browseButton = screen.getByText('Browse').closest('button') as HTMLButtonElement;
+        expect(rootInput.disabled).toBe(false);
+        expect(rootInput.readOnly).toBe(true);
+        expect(rootInput.getAttribute('aria-disabled')).toBe('true');
+        expect(browseButton.disabled).toBe(false);
+        expect(browseButton.getAttribute('aria-disabled')).toBe('true');
+        fireEvent.change(rootInput, { target: { value: 'D:/Other' } });
+        fireEvent.click(browseButton);
+        expect(setSettings).not.toHaveBeenCalled();
+        expect(mocks.open).not.toHaveBeenCalled();
+        expect(screen.getAllByRole('button', { name: /unnamed owner/i })
+            .every(button => !(button as HTMLButtonElement).disabled)).toBe(true);
+        expect(screen.queryByText(/locked until synchronization finishes/i)).toBeNull();
     });
 
     it('shows display names with stable IDs and requires confirmation for All users', async () => {
@@ -117,7 +210,12 @@ describe('InvokeAITab', () => {
                 schemaMode: 'multi_user',
                 dbPath: 'D:/Invoke/databases/invokeai.db',
                 imagesRoot: 'D:/Invoke',
-                owners: [{ ownerId: 'owner-a', displayName: 'Artemis', imageCount: 12 }],
+                owners: [{
+                    ownerId: 'owner-a',
+                    displayName: 'Artemis',
+                    imageCount: 12,
+                    intermediateImageCount: 4,
+                }],
                 unassignedImageCount: 2,
             },
         };
@@ -127,6 +225,8 @@ describe('InvokeAITab', () => {
 
         expect(screen.getByText('Artemis')).toBeTruthy();
         expect(screen.getByText('owner-a')).toBeTruthy();
+        expect(screen.getByText('8 standard images')).toBeTruthy();
+        expect(screen.getByText('4 intermediates')).toBeTruthy();
         expect(screen.queryByText(/email/i)).toBeTruthy();
         fireEvent.click(screen.getByRole('button', { name: /artemis/i }));
         expect(mocks.selectInvokeOwnerScope).toHaveBeenCalledWith({
@@ -134,7 +234,7 @@ describe('InvokeAITab', () => {
             mode: 'owner',
             ownerId: 'owner-a',
         });
-        await waitFor(() => expect(mocks.startInvokeSync).toHaveBeenCalledWith({ mode: 'startup' }));
+        expect(mocks.startInvokeSync).not.toHaveBeenCalled();
 
         fireEvent.click(screen.getByRole('button', { name: /all users/i }));
         expect(screen.getByText('Show images from all InvokeAI users?')).toBeTruthy();
@@ -145,7 +245,7 @@ describe('InvokeAITab', () => {
             dbPath: 'D:/Invoke/databases/invokeai.db',
             mode: 'all',
         }));
-        await waitFor(() => expect(mocks.startInvokeSync).toHaveBeenCalledTimes(2));
+        expect(mocks.startInvokeSync).not.toHaveBeenCalled();
     });
 
     it('explains offline and blocking failures without exposing raw errors by default', async () => {
@@ -180,7 +280,7 @@ describe('InvokeAITab', () => {
         await waitFor(() => expect(mocks.startInvokeSync).toHaveBeenCalledWith({ mode: 'startup' }));
     });
 
-    it('does not reapply or catch up when the current owner is clicked again', () => {
+    it('summarizes and auto-selects a single represented owner without showing All users', () => {
         mocks.ownerScopeState = {
             status: 'ready',
             rootPath: 'D:/Invoke',
@@ -201,23 +301,65 @@ describe('InvokeAITab', () => {
             },
         }} setSettings={vi.fn()} />);
 
-        fireEvent.click(screen.getByRole('button', { name: /artemis/i }));
-
+        expect(screen.getByText(/found one InvokeAI owner and selected it automatically/i)).toBeTruthy();
+        expect(screen.getByText(/12 images/i)).toBeTruthy();
+        expect(screen.queryByRole('button', { name: /artemis/i })).toBeNull();
+        expect(screen.queryByRole('button', { name: /all users/i })).toBeNull();
         expect(mocks.selectInvokeOwnerScope).not.toHaveBeenCalled();
         expect(mocks.startInvokeSync).not.toHaveBeenCalled();
+        view.unmount();
+    });
 
-        view.rerender(<InvokeAITab settings={{
+    it('keeps owner controls available when a single image owner has unassigned boards', () => {
+        mocks.ownerScopeState = {
+            status: 'ready',
+            rootPath: 'D:/Invoke',
+            discovery: {
+                schemaMode: 'multi_user',
+                dbPath: 'D:/Invoke/databases/invokeai.db',
+                imagesRoot: 'D:/Invoke',
+                owners: [{ ownerId: 'system', displayName: 'System', imageCount: 154_719, boardCount: 6 }],
+                unassignedImageCount: 0,
+                unassignedBoardCount: 231,
+            },
+        };
+
+        render(<InvokeAITab settings={settings('D:/Invoke')} setSettings={vi.fn()} />);
+
+        expect(screen.getByRole('button', { name: /system/i })).toBeTruthy();
+        expect(screen.getByRole('button', { name: /all users/i })).toBeTruthy();
+        expect(screen.getByText(/231 boards have no owner/i)).toBeTruthy();
+        expect(screen.queryByText(/selected it automatically/i)).toBeNull();
+    });
+
+    it('shows a non-color marker for the selected All users scope', () => {
+        mocks.ownerScopeState = {
+            status: 'ready',
+            discovery: {
+                schemaMode: 'multi_user',
+                dbPath: 'D:/Invoke/databases/invokeai.db',
+                imagesRoot: 'D:/Invoke',
+                owners: [
+                    { ownerId: 'owner-a', imageCount: 1 },
+                    { ownerId: 'owner-b', imageCount: 1 },
+                ],
+                unassignedImageCount: 0,
+            },
+        };
+
+        render(<InvokeAITab settings={{
             ...settings('D:/Invoke'),
             invokeOwnerSelection: {
                 dbPath: 'D:/Invoke/databases/invokeai.db',
                 mode: 'all',
             },
         }} setSettings={vi.fn()} />);
-        fireEvent.click(screen.getByRole('button', { name: /All users/i }));
 
+        const allUsers = screen.getByRole('button', { name: /All users/i });
+        expect(allUsers.querySelector('.lucide-check')).toBeTruthy();
+        fireEvent.click(allUsers);
         expect(screen.queryByText('Show images from all InvokeAI users?')).toBeNull();
         expect(mocks.selectInvokeOwnerScope).not.toHaveBeenCalled();
-        expect(mocks.startInvokeSync).not.toHaveBeenCalled();
     });
 
     it('updates typed and browsed paths while ignoring cancelled selections', async () => {

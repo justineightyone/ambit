@@ -3,7 +3,7 @@ import {
     type FileHashBackfillResult,
 } from '../../bindings';
 import { unwrap } from '../../utils/spectaUtils';
-import type { AIImage, MissingFileAuditResult } from '../../types';
+import { isVideoAsset, type AIImage, type MissingFileAuditResult } from '../../types';
 import { getDb, dbMutex } from './connection';
 import { mapRowToImage, getImageFieldsLight, REMOVED_IMAGE_FIELDS, type ImageRow } from './repoUtils';
 import { isBrowserMockMode } from '../runtime';
@@ -70,7 +70,7 @@ export const verifyLibraryIntegrity = async (
     }
 
     const db = await getDb();
-    const allImages = await db.select<ImagePathRow[]>('SELECT id, path FROM images WHERE invoke_scope_hidden = 0 AND is_missing = 0 AND is_deleted = 0');
+    const allImages = await db.select<ImagePathRow[]>('SELECT id, path FROM scoped_images WHERE invoke_scope_hidden = 0 AND is_missing = 0 AND is_deleted = 0');
     const total = allImages.length;
 
     if (total === 0) return { scanned: 0, total: 0, missingIds: [], sampleMissingPaths: [], wasCancelled: false };
@@ -125,7 +125,7 @@ export const getMissingImages = async (): Promise<AIImage[]> => {
     const db = await getDb();
     const rows = await db.select<ImageRow[]>(`
         SELECT ${getImageFieldsLight()}
-        FROM images
+        FROM scoped_images AS images
         WHERE is_missing = 1
           AND invoke_scope_hidden = 0
           AND is_deleted = 0
@@ -144,13 +144,20 @@ export const pruneMissingLinks = async (ids: string[]): Promise<number> => {
     if (ids.length === 0) return 0;
 
     console.log(`[Verify] Marking ${ids.length} images as missing`);
+    let marked = 0;
     for (let i = 0; i < ids.length; i += 500) {
         const batch = ids.slice(i, i + 500);
         const placeholders = batch.map(() => '?').join(',');
-        await db.execute(`UPDATE images SET is_missing = 1 WHERE id IN (${placeholders})`, batch);
+        const result = await db.execute(
+            `UPDATE images SET is_missing = 1
+             WHERE id IN (${placeholders})
+               AND id IN (SELECT id FROM scoped_images)`,
+            batch
+        );
+        marked += result.rowsAffected;
     }
 
-    return ids.length;
+    return marked;
 };
 
 export const getDeletedImages = async (): Promise<AIImage[]> => {
@@ -159,19 +166,20 @@ export const getDeletedImages = async (): Promise<AIImage[]> => {
     }
 
     const db = await getDb();
-    const rows = await db.select<ImageRow[]>(`SELECT ${REMOVED_IMAGE_FIELDS} FROM removed_images WHERE invoke_scope_hidden = 0 ORDER BY removed_at DESC`);
+    const rows = await db.select<ImageRow[]>(`SELECT ${REMOVED_IMAGE_FIELDS} FROM scoped_removed_images AS removed_images WHERE invoke_scope_hidden = 0 ORDER BY removed_at DESC`);
     return rows.map(mapRowToImage);
 };
 
 export const getIntermediateImages = async (whereClause: string = '', params: unknown[] = []): Promise<AIImage[]> => {
     if (isBrowserMockMode()) {
-        return getBrowserMockImages().filter(image => !image.isDeleted && (image.isIntermediate || image.metadata.isIntermediate));
+        return getBrowserMockImages().filter(image => !isVideoAsset(image) && !image.isDeleted && (image.isIntermediate || image.metadata.isIntermediate));
     }
 
     const db = await getDb();
     let query = `
-        SELECT ${getImageFieldsLight()} FROM images
+        SELECT ${getImageFieldsLight()} FROM scoped_images AS images
         WHERE IFNULL(is_intermediate_gen, 0) = 1
+        AND media_type = 'image'
         AND invoke_scope_hidden = 0
         AND is_deleted = 0
     `;
@@ -193,7 +201,8 @@ export const getIntermediateImages = async (whereClause: string = '', params: un
 export const getUntaggedImages = async (whereClause: string = '', params: unknown[] = []): Promise<AIImage[]> => {
     if (isBrowserMockMode()) {
         return getBrowserMockImages().filter(image =>
-            !image.isDeleted
+            !isVideoAsset(image)
+            && !image.isDeleted
             && !image.metadata.positivePrompt
             && !isKnownInvokeImageAsset(image.invokeImageCategory)
         );
@@ -201,8 +210,9 @@ export const getUntaggedImages = async (whereClause: string = '', params: unknow
 
     const db = await getDb();
     let query = `
-        SELECT ${getImageFieldsLight()} FROM images
+        SELECT ${getImageFieldsLight()} FROM scoped_images AS images
         WHERE (positive_prompt IS NULL OR positive_prompt = '')
+        AND media_type = 'image'
         AND invoke_scope_hidden = 0
         AND is_deleted = 0
         AND IFNULL(is_intermediate_gen, 0) = 0
@@ -223,50 +233,24 @@ export const getUntaggedImages = async (whereClause: string = '', params: unknow
     return rows.map(mapRowToImage);
 };
 
-/**
- * Build the SQL condition for identifying unoptimized images.
- * This is the single source of truth for what constitutes an "unoptimized" image.
- * 
- * An image is considered unoptimized if:
- * - It has no thumbnail (path = thumbnail_path, NULL, or empty)
- * 
- * With includeUpgradeable=true, also includes:
- * - Images with non-Ambit thumbnails (imported from InvokeAI, legacy, etc.)
- * - Images missing micro-thumbnails (need instant preview)
- */
-function buildUnoptimizedCondition(includeUpgradeable: boolean): string {
-    // Base condition: No thumbnail at all
-    const noThumbnail = `(path = thumbnail_path OR thumbnail_path IS NULL OR thumbnail_path = '')`;
-
-    if (!includeUpgradeable) {
-        return noThumbnail;
-    }
-
-    // Extended condition: Include upgradeable thumbnails
-    return `
-        (
-            ${noThumbnail}
-            OR 
-            (
-                thumbnail_path IS NOT NULL 
-                AND thumbnail_path != '' 
-                AND path != thumbnail_path
-                AND (thumbnail_source IS NULL OR thumbnail_source != 'ambit')
-            )
-        )
-    `;
-}
+const thumbnailRepairCandidateSource = (includeUpgradeable: boolean): string => (
+    includeUpgradeable
+        ? `(SELECT * FROM thumbnail_repair_required
+            UNION ALL
+            SELECT * FROM thumbnail_repair_upgradeable)`
+        : 'thumbnail_repair_required'
+);
 
 export const getUnoptimizedImages = async (whereClause: string = '', params: unknown[] = [], includeUpgradeable: boolean = false): Promise<AIImage[]> => {
     if (isBrowserMockMode()) return [];
 
     const db = await getDb();
 
-    const unoptimizedCondition = buildUnoptimizedCondition(includeUpgradeable);
+    const candidateSource = thumbnailRepairCandidateSource(includeUpgradeable);
 
     let query = `
-        SELECT ${getImageFieldsLight()} FROM images
-        WHERE ${unoptimizedCondition}
+        SELECT ${getImageFieldsLight()} FROM ${candidateSource} AS images
+        WHERE media_type = 'image'
         AND path NOT LIKE 'blob:%' 
         AND path NOT LIKE 'data:%'
         AND invoke_scope_hidden = 0
@@ -301,11 +285,11 @@ export const getUnoptimizedImagesCount = async (whereClause: string = '', params
 
     const db = await getDb();
 
-    const unoptimizedCondition = buildUnoptimizedCondition(includeUpgradeable);
+    const candidateSource = thumbnailRepairCandidateSource(includeUpgradeable);
 
     let query = `
-        SELECT COUNT(*) as count FROM images 
-        WHERE ${unoptimizedCondition}
+        SELECT COUNT(*) as count FROM ${candidateSource} AS images
+        WHERE media_type = 'image'
         AND path NOT LIKE 'blob:%' 
         AND path NOT LIKE 'data:%'
         AND invoke_scope_hidden = 0
@@ -334,22 +318,31 @@ export const getUnoptimizedImagesCount = async (whereClause: string = '', params
  * Paginated ID and Path fetcher for regeneration processing.
  * Returns IDs and Paths to allow scanning by path and updating by ID.
  */
+export interface UnoptimizedImageCursor {
+    timestamp: number;
+    id: string;
+}
+
+export interface UnoptimizedImageEntry extends UnoptimizedImageCursor {
+    path: string;
+}
+
 export const getUnoptimizedImageEntries = async (
-    offset: number,
+    cursor: UnoptimizedImageCursor | null,
     limit: number,
     whereClause: string = '',
     params: unknown[] = [],
     includeUpgradeable: boolean = false
-): Promise<{ id: string; path: string }[]> => {
+): Promise<UnoptimizedImageEntry[]> => {
     if (isBrowserMockMode()) return [];
 
     const db = await getDb();
 
-    const unoptimizedCondition = buildUnoptimizedCondition(includeUpgradeable);
+    const candidateSource = thumbnailRepairCandidateSource(includeUpgradeable);
 
     let query = `
-        SELECT id, path FROM images 
-        WHERE ${unoptimizedCondition}
+        SELECT id, path, COALESCE(timestamp, 0) AS timestamp FROM ${candidateSource} AS images
+        WHERE media_type = 'image'
         AND path NOT LIKE 'blob:%' 
         AND path NOT LIKE 'data:%'
         AND invoke_scope_hidden = 0
@@ -370,8 +363,16 @@ export const getUnoptimizedImageEntries = async (
         params = [];
     }
 
-    query += ` ORDER BY timestamp DESC LIMIT ${limit} OFFSET ${offset}`;
-    const rows = await db.select<{ id: string; path: string }[]>(query, params);
+    if (cursor) {
+        query += ` AND (
+            COALESCE(timestamp, 0) < ?
+            OR (COALESCE(timestamp, 0) = ? AND id < ?)
+        )`;
+        params = [...params, cursor.timestamp, cursor.timestamp, cursor.id];
+    }
+
+    query += ` ORDER BY COALESCE(timestamp, 0) DESC, id DESC LIMIT ${limit}`;
+    const rows = await db.select<UnoptimizedImageEntry[]>(query, params);
     return rows;
 };
 
@@ -415,7 +416,7 @@ export const getDuplicateCandidates = async (): Promise<AIImage[]> => {
     const query = `
         WITH eligible AS (
             SELECT id, file_hash
-            FROM images
+            FROM scoped_images AS images
             WHERE is_deleted = 0
               AND invoke_scope_hidden = 0
               AND is_missing = 0
@@ -431,7 +432,7 @@ export const getDuplicateCandidates = async (): Promise<AIImage[]> => {
             HAVING COUNT(*) > 1
         )
         SELECT ${getImageFieldsLight()}
-        FROM images
+        FROM scoped_images AS images
         WHERE id IN (SELECT id FROM eligible WHERE file_hash IN (SELECT file_hash FROM duplicate_hashes))
         ORDER BY file_hash DESC, file_size DESC, timestamp DESC
     `;
@@ -450,12 +451,13 @@ export const getMaintenanceCounts = async () => {
         const images = getBrowserMockImages();
         return {
             untagged: images.filter(image =>
-                !image.metadata.positivePrompt
+                !isVideoAsset(image)
+                && !image.metadata.positivePrompt
                 && !image.isDeleted
                 && !isKnownInvokeImageAsset(image.invokeImageCategory)
             ).length,
             orphans: 0,
-            intermediates: images.filter(image => image.isIntermediate || image.metadata.isIntermediate).length,
+            intermediates: images.filter(image => !isVideoAsset(image) && (image.isIntermediate || image.metadata.isIntermediate)).length,
             missing: images.filter(image => image.isMissing).length,
             trash: images.filter(image => image.isDeleted).length,
             duplicates: 0
@@ -469,15 +471,16 @@ export const getMaintenanceCounts = async () => {
         SELECT 
             COUNT(*) FILTER (
                 WHERE (positive_prompt IS NULL OR positive_prompt = '')
+                  AND media_type = 'image'
                   AND invoke_scope_hidden = 0
                   AND is_deleted = 0
                   AND IFNULL(is_intermediate_gen, 0) = 0
                   AND IFNULL(is_invoke_asset_gen, 0) = 0
             ) as untagged,
             COUNT(*) FILTER (WHERE invoke_scope_hidden = 0 AND is_missing = 1 AND is_deleted = 0) as missing,
-            COUNT(*) FILTER (WHERE invoke_scope_hidden = 0 AND IFNULL(is_intermediate_gen, 0) = 1 AND is_deleted = 0) as intermediates,
-            (SELECT COUNT(*) FROM removed_images WHERE invoke_scope_hidden = 0) as trash
-        FROM images
+            COUNT(*) FILTER (WHERE media_type = 'image' AND invoke_scope_hidden = 0 AND IFNULL(is_intermediate_gen, 0) = 1 AND is_deleted = 0) as intermediates,
+            (SELECT COUNT(*) FROM scoped_removed_images WHERE invoke_scope_hidden = 0) as trash
+        FROM scoped_images AS images
     `);
 
     const counts = res[0] || {};

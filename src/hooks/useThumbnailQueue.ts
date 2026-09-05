@@ -3,6 +3,7 @@ import { useIsFetching, useQueryClient } from '@tanstack/react-query';
 import {
     commands,
     type ThumbnailOptimizationProfile,
+    type ThumbnailOptimizationProgress,
     type ThumbnailOptimizationResult
 } from '../bindings';
 import { useLibraryStore } from '../stores/libraryStore';
@@ -13,31 +14,15 @@ import {
     formatThumbnailQueueCompleteMessage,
     formatThumbnailQueueRunningMessage
 } from './thumbnailQueueProgress';
-import { rebuildThumbnailFacetCache } from '../services/db/imageRepo';
-import { getThumbnailDir } from '../services/thumbnailService';
+import { getThumbnailDir, getThumbnailRepairOwnerId } from '../services/thumbnailService';
+import { refreshThumbnailConsumers as refreshCommittedThumbnailConsumers } from '../services/thumbnailConsumerRefresh';
+import { useCollectionStore } from '../stores/collectionStore';
 import { startBackgroundDiagnostic, type BackgroundDiagnosticHandle } from '../utils/backgroundDiagnostics';
 import { listenWithCleanup } from '../utils/tauriListener';
 
 const STARTUP_DELAY_MS = 30000;
 const RESUME_DELAY_MS = 5000;
 const COMPLETE_VISIBLE_MS = 1500;
-
-interface ThumbnailOptimizationProgress {
-    checked: number;
-    total: number;
-    optimized: number;
-    reused: number;
-    failed: number;
-    skipped: number;
-    imagesPerSecond: number;
-    batchMs: number;
-    dbMs: number;
-    encodeMs: number;
-    profile: ThumbnailOptimizationProfile;
-    phase: string;
-    message: string;
-    isThrottled: boolean;
-}
 
 type ToastFn = (message: string, type: 'success' | 'error' | 'info' | 'warning') => void;
 type RunningThumbnailConfig = {
@@ -47,9 +32,14 @@ type RunningThumbnailConfig = {
 
 const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
 const hasVisibleThumbnailProgress = (progress: ThumbnailOptimizationProgress): boolean => (
-    progress.total > 0
+    progress.phase === 'discovering'
+    || progress.phase === 'persisting'
+    || progress.phase === 'throttled'
+    || progress.phase === 'complete'
+    || (progress.total ?? 0) > 0
     || progress.checked > 0
     || progress.optimized > 0
+    || progress.missing > 0
     || progress.reused > 0
     || progress.failed > 0
     || progress.skipped > 0
@@ -57,6 +47,7 @@ const hasVisibleThumbnailProgress = (progress: ThumbnailOptimizationProgress): b
 const hasVisibleThumbnailResult = (result: ThumbnailOptimizationResult): boolean => (
     result.checked > 0
     || result.optimized > 0
+    || result.missing > 0
     || result.reused > 0
     || result.failed > 0
     || result.skipped > 0
@@ -83,6 +74,7 @@ export function useThumbnailQueue(addToast?: ToastFn): void {
     const mountedRef = useRef(true);
     const scheduledIdleCancelRef = useRef<(() => void) | null>(null);
     const jobDiagnosticRef = useRef<BackgroundDiagnosticHandle | null>(null);
+    const consumerRefreshScheduledRef = useRef(false);
     const browserMockMode = isBrowserMockMode();
     const [resumeSignal, setResumeSignal] = useState(0);
     const [postRunRetrySignal, setPostRunRetrySignal] = useState(0);
@@ -100,6 +92,7 @@ export function useThumbnailQueue(addToast?: ToastFn): void {
     const isRefreshingMetadata = useLibraryStore(s => s.isRefreshingMetadata);
     const thumbnailMaintenanceOperation = useLibraryStore(s => s.thumbnailMaintenanceOperation);
     const thumbnailOptimizationRetrySignal = useLibraryStore(s => s.thumbnailOptimizationRetrySignal);
+    const thumbnailOptimizationCancelSignal = useLibraryStore(s => s.thumbnailOptimizationCancelSignal);
 
     const setBackgroundHealingActive = useLibraryStore(s => s.setBackgroundHealingActive);
     const setBackgroundHealingProgress = useLibraryStore(s => s.setBackgroundHealingProgress);
@@ -110,6 +103,7 @@ export function useThumbnailQueue(addToast?: ToastFn): void {
     const enableAutoThumbnailHealing = useSettingsStore(s => s.settings.enableAutoThumbnailHealing);
     const enforceHighQualityThumbnails = useSettingsStore(s => s.settings.enforceHighQualityThumbnails);
     const thumbnailOptimizationProfile = useSettingsStore(s => s.settings.thumbnailOptimizationProfile ?? 'balanced');
+    const refreshCollectionThumbnails = useCollectionStore(s => s.refreshCollectionThumbnails);
     const isSettingsLoaded = useSettingsStore(s => s.isLoaded);
 
     const isImageQueryFetching = activeImageQueryCount > 0;
@@ -233,32 +227,38 @@ export function useThumbnailQueue(addToast?: ToastFn): void {
         if (details) {
             setBackgroundHealingDetails({
                 ...details,
-                phase: throttled ? 'throttled' : 'running',
+                phase: throttled ? 'throttled' : 'processing',
                 isThrottled: throttled
             });
         }
     }, [setBackgroundHealingDetails]);
 
-    const refreshThumbnailConsumers = useCallback(async (optimized: number) => {
-        if (optimized <= 0) return;
+    const refreshThumbnailConsumers = useCallback(async (optimized: number, missing: number, force = false) => {
+        if (!force && optimized <= 0 && missing <= 0) return;
+        await refreshCommittedThumbnailConsumers({
+            queryClient,
+            refreshCollectionThumbnails,
+            logPrefix: '[ThumbnailQueue]',
+        });
+    }, [queryClient, refreshCollectionThumbnails]);
 
-        await queryClient.invalidateQueries({ queryKey: ['images'] });
-        await queryClient.invalidateQueries({ queryKey: ['libraryStats'] });
-
-        try {
-            await rebuildThumbnailFacetCache();
-            useLibraryStore.getState().incrementFacetCacheVersion();
-        } catch (error) {
-            console.warn('[ThumbnailQueue] Thumbnail facet cache refresh failed', error);
-        }
-    }, [queryClient]);
+    const scheduleThumbnailConsumerRefresh = useCallback((optimized: number, missing: number, force = false) => {
+        if (!force && optimized <= 0 && missing <= 0) return;
+        if (consumerRefreshScheduledRef.current) return;
+        consumerRefreshScheduledRef.current = true;
+        void refreshThumbnailConsumers(optimized, missing, force).catch(refreshError => {
+            console.error('[ThumbnailQueue] Smart thumbnail changes may have been saved, but consumers failed to refresh', refreshError);
+        });
+    }, [refreshThumbnailConsumers]);
 
     const handleCompletion = useCallback(async (result: ThumbnailOptimizationResult) => {
         if (completionHandledRef.current) return;
         completionHandledRef.current = true;
+        const missing = result.missing ?? 0;
         jobDiagnosticRef.current?.finish(result.wasCancelled ? 'cancelled' : 'finished', {
             checked: result.checked,
             optimized: result.optimized,
+            missing,
             failed: result.failed,
             skipped: result.skipped,
             durationMs: result.durationMs
@@ -279,6 +279,9 @@ export function useThumbnailQueue(addToast?: ToastFn): void {
                 retryAfterCurrentRunRef.current = false;
                 setResumeSignal(signal => signal + 1);
             }
+
+            scheduleThumbnailConsumerRefresh(result.optimized, missing);
+
             return;
         }
 
@@ -289,6 +292,7 @@ export function useThumbnailQueue(addToast?: ToastFn): void {
         setLastBackgroundHealingRun({
             checked: result.checked,
             optimized: result.optimized,
+            missing,
             reused: result.reused,
             failed: result.failed,
             skipped: result.skipped,
@@ -319,12 +323,14 @@ export function useThumbnailQueue(addToast?: ToastFn): void {
             message: formatThumbnailQueueCompleteMessage({
                 checked: result.checked,
                 optimized: result.optimized,
+                missing,
+                skipped: result.skipped,
                 failed: result.failed
             })
         });
         setBackgroundHealingDetails(null);
 
-        void refreshThumbnailConsumers(result.optimized);
+        scheduleThumbnailConsumerRefresh(result.optimized, missing);
 
         await sleep(COMPLETE_VISIBLE_MS);
 
@@ -341,7 +347,7 @@ export function useThumbnailQueue(addToast?: ToastFn): void {
         }
     }, [
         enableAutoThumbnailHealing,
-        refreshThumbnailConsumers,
+        scheduleThumbnailConsumerRefresh,
         setBackgroundHealingActive,
         setBackgroundHealingDetails,
         setBackgroundHealingPaused,
@@ -363,9 +369,11 @@ export function useThumbnailQueue(addToast?: ToastFn): void {
                 jobDiagnosticRef.current?.update({
                     checked: event.payload.checked,
                     optimized: event.payload.optimized,
+                    missing: event.payload.missing ?? 0,
                     failed: event.payload.failed,
                     skipped: event.payload.skipped,
                     phase: event.payload.phase,
+                    candidateFetchMs: event.payload.candidateFetchMs,
                     isThrottled: event.payload.isThrottled
                 });
                 if (!shouldShowProgress) return;
@@ -374,16 +382,20 @@ export function useThumbnailQueue(addToast?: ToastFn): void {
                 setBackgroundHealingPaused(false);
                 setBackgroundHealingProgress({
                     current: event.payload.checked,
-                    total: event.payload.total > 0 ? event.payload.total : 0,
+                    total: event.payload.total ?? 0,
+                    mode: event.payload.total === null ? 'indeterminate' : undefined,
                     message: formatThumbnailQueueRunningMessage({
                         checked: event.payload.checked,
                         optimized: event.payload.optimized,
+                        missing: event.payload.missing ?? 0,
+                        skipped: event.payload.skipped,
                         failed: event.payload.failed
                     })
                 });
                 setBackgroundHealingDetails({
                     checked: event.payload.checked,
                     optimized: event.payload.optimized,
+                    missing: event.payload.missing ?? 0,
                     reused: event.payload.reused,
                     failed: event.payload.failed,
                     skipped: event.payload.skipped,
@@ -391,6 +403,7 @@ export function useThumbnailQueue(addToast?: ToastFn): void {
                     batchMs: event.payload.batchMs,
                     dbMs: event.payload.dbMs,
                     encodeMs: event.payload.encodeMs,
+                    candidateFetchMs: event.payload.candidateFetchMs,
                     profile: event.payload.profile,
                     phase: event.payload.phase,
                     isThrottled: event.payload.isThrottled
@@ -429,16 +442,12 @@ export function useThumbnailQueue(addToast?: ToastFn): void {
         cancelRequestedRef.current = true;
 
         try {
-            await commands.cancelThumbnailOptimizationJob();
+            await commands.cancelThumbnailOptimizationJob(null);
         } catch (error) {
             console.error('[ThumbnailQueue] Failed to cancel backend job', error);
         }
 
         if (clearDock) {
-            completionHandledRef.current = true;
-            isRunningRef.current = false;
-            runningConfigRef.current = null;
-            lastThrottleRef.current = null;
             restartRequestedRef.current = false;
             jobDiagnosticRef.current?.finish('cancelled', { clearDock });
             jobDiagnosticRef.current = null;
@@ -454,6 +463,11 @@ export function useThumbnailQueue(addToast?: ToastFn): void {
         setBackgroundHealingPaused,
         setBackgroundHealingProgress
     ]);
+
+    useEffect(() => {
+        if (browserMockMode || thumbnailOptimizationCancelSignal === 0) return;
+        void cancelBackendJob(true);
+    }, [browserMockMode, cancelBackendJob, thumbnailOptimizationCancelSignal]);
 
     const runQueue = useCallback(async () => {
         const settings = useSettingsStore.getState().settings;
@@ -488,6 +502,7 @@ export function useThumbnailQueue(addToast?: ToastFn): void {
 
         isRunningRef.current = true;
         completionHandledRef.current = false;
+        consumerRefreshScheduledRef.current = false;
         cancelRequestedRef.current = false;
         restartRequestedRef.current = false;
         runningConfigRef.current = optimizerConfig;
@@ -508,8 +523,11 @@ export function useThumbnailQueue(addToast?: ToastFn): void {
             const jobPromise = unwrap(commands.startThumbnailOptimizationJob({
                 thumbnailDir,
                 includeUpgradeable: optimizerConfig.includeUpgradeable,
-                profile: optimizerConfig.profile
-            }));
+                profile: optimizerConfig.profile,
+                sourceRoots: settings.monitoredFolders
+                    .filter(folder => folder.isActive)
+                    .map(folder => folder.path),
+            }, getThumbnailRepairOwnerId()));
             setBackendThrottled(shouldStartThrottled);
 
             const result = await jobPromise;
@@ -525,6 +543,9 @@ export function useThumbnailQueue(addToast?: ToastFn): void {
                     error: error instanceof Error ? error.message : String(error)
                 });
                 jobDiagnosticRef.current = null;
+
+                scheduleThumbnailConsumerRefresh(0, 0, true);
+
                 return;
             }
 
@@ -542,10 +563,13 @@ export function useThumbnailQueue(addToast?: ToastFn): void {
             setBackgroundHealingPaused(false);
             setBackgroundHealingProgress(null);
             setBackgroundHealingDetails(null);
+
+            scheduleThumbnailConsumerRefresh(0, 0, true);
         }
     }, [
         addToast,
         handleCompletion,
+        scheduleThumbnailConsumerRefresh,
         setBackendThrottled,
         setBackgroundHealingActive,
         setBackgroundHealingDetails,
@@ -713,11 +737,13 @@ export function useThumbnailQueue(addToast?: ToastFn): void {
     ]);
 
     useEffect(() => {
+        mountedRef.current = true;
+
         return () => {
             mountedRef.current = false;
             cancelScheduledIdleCallback();
             if (isRunningRef.current) {
-                void commands.cancelThumbnailOptimizationJob().catch(console.error);
+                void commands.cancelThumbnailOptimizationJob(null).catch(console.error);
             }
             jobDiagnosticRef.current?.finish('cancelled', { reason: 'unmount' });
             jobDiagnosticRef.current = null;

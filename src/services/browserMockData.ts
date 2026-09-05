@@ -470,6 +470,7 @@ const filterImages = (
 
     return images.filter((image) => {
         if (image.isDeleted) return false;
+        if (filters.mediaType && filters.mediaType !== 'all' && (image.mediaType ?? 'image') !== filters.mediaType) return false;
         if (applyVisibilityFilters && !filters.showIntermediates && (image.isIntermediate || image.metadata.isIntermediate)) return false;
         if (applyVisibilityFilters && !filters.showGrids && image.metadata.isGrid) return false;
         if (applyVisibilityFilters && !filters.showInvokeImageAssets && isKnownInvokeImageAsset(image.invokeImageCategory)) return false;
@@ -612,12 +613,15 @@ export const getBrowserMockStatsSummary = (filters: FilterState): LibraryStatsSu
     });
 
     return {
-        totalImages: images.length,
+        totalItems: images.length,
+        totalImages: images.filter(image => (image.mediaType ?? 'image') === 'image').length,
+        totalVideos: images.filter(image => image.mediaType === 'video').length,
+        totalBytes: images.reduce((sum, image) => sum + (image.fileSize ?? 0), 0),
         totalGenerations: images.length,
         avgSteps: recordedSteps.length
             ? Math.round(recordedSteps.reduce((sum, steps) => sum + steps, 0) / recordedSteps.length)
             : 0,
-        estSizeMB: (images.reduce((sum, image) => sum + (image.fileSize ?? 0), 0) / 1_000_000).toFixed(1),
+        estSizeMB: (images.reduce((sum, image) => sum + (image.fileSize ?? 0), 0) / (1024 * 1024)).toFixed(1),
         modelStats: Array.from(modelCounts.entries())
             .sort((a, b) => b[1] - a[1])
             .map(([name, count]) => ({ name, fullName: name, count }))
@@ -694,9 +698,13 @@ export const deleteBrowserMockCollection = (id: string): void => {
 export const addBrowserMockImagesToCollection = (collectionId: string, imageIds: string[]): void => {
     const collection = getBrowserMockCollections().find((item) => item.id === collectionId);
     if (!collection) return;
+    const addedIds = new Set(imageIds);
     upsertBrowserMockCollection({
         ...collection,
         imageIds: Array.from(new Set([...collection.imageIds, ...imageIds])),
+        manualExclusions: collection.filters
+            ? (collection.manualExclusions ?? []).filter((id) => !addedIds.has(id))
+            : collection.manualExclusions,
     });
 };
 
@@ -707,9 +715,26 @@ export const removeBrowserMockImagesFromCollection = (collectionId: string, imag
     upsertBrowserMockCollection({
         ...collection,
         imageIds: collection.imageIds.filter((id) => !removeIds.has(id)),
+        manualExclusions: collection.filters
+            ? Array.from(new Set([...(collection.manualExclusions ?? []), ...imageIds]))
+            : collection.manualExclusions,
     });
 };
 
 export const updateBrowserMockImage = (id: string, update: Partial<AIImage>): void => {
     state.images = state.images.map((image) => image.id === id ? { ...image, ...update } : image);
+};
+
+export const deleteBrowserMockImages = (ids: string[]): void => {
+    const deletedIds = new Set(ids);
+    state.images = state.images.filter((image) => !deletedIds.has(image.id));
+    state.collections = state.collections.map((collection) => ({
+        ...collection,
+        imageIds: collection.imageIds.filter((id) => !deletedIds.has(id)),
+    }));
+    state.smartCollections = state.smartCollections.map((collection) => ({
+        ...collection,
+        imageIds: collection.imageIds.filter((id) => !deletedIds.has(id)),
+    }));
+    persistState();
 };
