@@ -40,17 +40,28 @@ export const getImageFieldsFull = (alias = 'images'): string => {
     `;
 };
 
-export const REMOVED_IMAGE_FIELDS = `
+/**
+ * Removed-image columns without the large JSON blobs. Listing the whole trash
+ * with the blobs included pulls hundreds of MB through the SQL IPC bridge on
+ * big libraries and can OOM the webview, so grids use this and mapRowToImage
+ * falls back to buildLightMetadata().
+ */
+export const REMOVED_IMAGE_FIELDS_LIGHT = `
     id, path, width, height, file_size, timestamp, thumbnail_path, micro_thumbnail, thumbnail_source,
     is_favorite, is_pinned, 0 as is_deleted, is_missing, user_masked, group_id, board_id, notes,
     ${INVOKE_IMAGE_SOURCE_FIELDS},
     0 as is_intermediate_gen, 0 as is_grid_gen,
-    original_metadata_json, original_parsed_json, original_state_json, is_corrupt, metadata_json,
+    is_corrupt,
     NULL as model_name, NULL as model_hash, NULL as tool, NULL as resolved_model_name, NULL as file_hash,
     NULL as steps, NULL as seed, NULL as cfg, NULL as sampler, NULL as generation_type,
     NULL as positive_prompt, NULL as negative_prompt,
     media_type, media_container, media_mime_type, duration_ms, video_codec, video_profile,
     audio_present, audio_codec, frame_rate_num, frame_rate_den, rotation_degrees, probe_status, playback_status
+`;
+
+export const REMOVED_IMAGE_FIELDS = `
+    ${REMOVED_IMAGE_FIELDS_LIGHT},
+    original_metadata_json, original_parsed_json, original_state_json, metadata_json
 `;
 
 export type ImageRow = Record<string, unknown>;
